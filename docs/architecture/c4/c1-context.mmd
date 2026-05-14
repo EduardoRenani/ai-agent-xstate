@@ -1,0 +1,24 @@
+---
+config:
+  layout: elk
+  flowchart:
+    nodeSpacing: 80
+    rankSpacing: 100
+---
+%% Spec: c4-doc.md
+%% Modo: inicial
+%% Atualizado: 2026-05-14
+%% Fonte: src/index.ts, src/machine.ts, src/openrouter.ts
+flowchart LR
+    user[User]:::entry
+
+    system[AI Agent CLI]:::harness
+
+    openrouter[OpenRouter API]:::external
+
+    user -->|CLI stdin/stdout| system
+    system -->|HTTPS chat completion| openrouter
+
+    classDef entry fill:#ea580c,stroke:#9a3412,color:#fff
+    classDef harness fill:#7c3aed,stroke:#5b21b6,color:#fff
+    classDef external fill:#dc2626,stroke:#991b1b,color:#fff

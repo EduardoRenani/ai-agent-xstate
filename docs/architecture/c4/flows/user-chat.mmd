@@ -1,0 +1,33 @@
+%% Spec: c4-doc.md
+%% Modo: inicial
+%% Atualizado: 2026-05-14
+%% Fonte: src/index.ts, src/machine.ts, src/openrouter.ts
+sequenceDiagram
+    participant user as [ENTRY] User
+    participant cli as [ENTRY] CLI Entry Point
+    participant machine as [HARNESS] Agent State Machine
+    participant client as [CODE] OpenRouter Client
+    participant api as [EXT] OpenRouter API
+
+    user->>cli: types first message
+    cli->>machine: send MESSAGE event
+    Note over machine: idle -> greetings (entry: print greeting)
+    Note over machine: greetings -> improvise.listening (always)
+
+    user->>cli: types question
+    cli->>machine: send MESSAGE event
+    Note over machine: listening -> thinking
+    machine->>client: invoke callLLM(messages)
+    client->>api: chat.completions.create
+    api-->>client: completion response
+    client-->>machine: assistant reply (event.output)
+    Note over machine: thinking -> listening (print reply, append to context)
+
+    loop conversation continues
+        user->>cli: types question
+        cli->>machine: send MESSAGE event
+        machine->>client: invoke callLLM(messages)
+        client->>api: chat.completions.create
+        api-->>client: completion response
+        client-->>machine: assistant reply
+    end

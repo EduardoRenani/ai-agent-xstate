@@ -1,0 +1,19 @@
+{
+    "name": "ai-agent-xstate",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "start": "tsx src/index.ts"
+    },
+    "dependencies": {
+        "xstate": "^5",
+        "openai": "^4"
+    },
+    "devDependencies": {
+        "typescript": "^5",
+        "@types/node": "^22",
+        "tsx": "^4",
+        "dotenv": "^16"
+    }
+}

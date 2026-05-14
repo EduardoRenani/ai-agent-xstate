@@ -1,0 +1,40 @@
+---
+title: State Machine — AI Agent
+---
+%% Spec: behavioral-doc.md
+%% Modo: inicial
+%% Atualizado: 2026-05-14
+%% Fonte: src/machine.ts
+%% Componente C4: machine (c2-container.mmd)
+%% Container C4: system (c2-container.mmd)
+%% Externos que disparam transicoes: OpenRouter API (via invoke in thinking)
+stateDiagram-v2
+    [*] --> idle
+
+    idle --> greetings: MESSAGE
+
+    greetings --> improvise: always (transient)
+
+    state improvise {
+        [*] --> listening
+
+        listening --> thinking: MESSAGE / appendUserMessage
+        thinking --> listening: onDone / print reply, append assistant message
+        thinking --> listening: onError / print error
+    }
+
+    note right of greetings
+        Transient state.
+        Entry: prints greeting.
+        Immediately transitions out.
+    end note
+
+    note right of thinking
+        Invokes callLLM actor (OpenRouter API).
+        Does not accept MESSAGE while processing.
+    end note
+
+    note right of idle
+        No terminal state.
+        Agent runs until process exit (Ctrl+C).
+    end note
