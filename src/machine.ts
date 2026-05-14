@@ -97,6 +97,7 @@ export const agentMachine = setup({
                     target: "improvise",
                     actions: enqueueActions(({ enqueue, event }) => {
                         const { greeting, needsFollowUp } = (event as { output: { greeting: string; needsFollowUp: boolean } }).output;
+                        console.log(`\n${greeting}\n`);
                         enqueue.assign({
                             messages: ({ context }) => [
                                 ...context.messages,
