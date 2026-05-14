@@ -1,13 +1,41 @@
-import { setup, assign, fromPromise, raise } from "xstate";
+import { setup, assign, fromPromise, enqueueActions } from "xstate";
 import { chat } from "./openrouter.js";
+
+// ── Types ────────────────────────────────────────────────────────────
+
+export type LLMInput = {
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+    systemPrompt: string;
+};
+
+// ── Greetings ────────────────────────────────────────────────────────
 
 const GREETINGS_SYSTEM_PROMPT = [
     "Você é Atlas, um assistente de propósito geral.",
-    "Cumprimente o usuário em português do Brasil de forma amigável e direta.",
-    "Apresente-se brevemente pelo nome.",
-    "Não responda perguntas — apenas cumprimente.",
+    "Analise a mensagem do usuário e responda APENAS com JSON neste formato exato:",
+    '{"greeting": "<sua saudação>", "needsFollowUp": <boolean>}',
+    "Regras para greeting: cumprimente o usuário em português do Brasil de forma amigável e direta. Nao responder nada alem de cumprimentar",
+    "Apresente-se brevemente pelo nome. Não responda perguntas — apenas cumprimente.",
     "Mantenha a saudação curta (1-2 frases).",
-].join(" ");
+    "Regras para needsFollowUp: true se o usuário fez uma pergunta ou pedido além de cumprimentar.",
+    'false se o usuário apenas cumprimentou (ex: "oi", "olá", "e aí", "bom dia").',
+    "Retorne APENAS o JSON, sem markdown, sem code blocks, sem texto extra.",
+].join("\n");
+
+const greetingsNode = fromPromise(async ({ input }: { input: LLMInput }): Promise<{ greeting: string; needsFollowUp: boolean }> => {
+    const raw = await chat(input.messages, input.systemPrompt);
+    try {
+        const parsed = JSON.parse(raw) as { greeting: string; needsFollowUp: boolean };
+        return {
+            greeting: parsed.greeting,
+            needsFollowUp: parsed.needsFollowUp === true,
+        };
+    } catch {
+        return { greeting: raw, needsFollowUp: false };
+    }
+});
+
+// ── Improvise ────────────────────────────────────────────────────────
 
 const IMPROVISE_SYSTEM_PROMPT = [
     "Você é Atlas, um assistente de propósito geral.",
@@ -16,9 +44,13 @@ const IMPROVISE_SYSTEM_PROMPT = [
     "Responda às perguntas do usuário de forma útil e concisa.",
 ].join(" ");
 
+const improviseThinkingNode = fromPromise(async ({ input }: { input: LLMInput }) =>
+    chat(input.messages, input.systemPrompt)
+);
+
+// ── Machine ──────────────────────────────────────────────────────────
+
 export const agentMachine = setup({
-    // types: declares the TypeScript types for context (shared data) and events
-    // (messages the machine can receive). This gives type safety across the machine.
     types: {
         context: {} as {
             messages: Array<{ role: "user" | "assistant"; content: string }>;
@@ -27,8 +59,6 @@ export const agentMachine = setup({
             | { type: "MESSAGE"; text: string }
             | { type: "PARTIALLY_RESPONDED" },
     },
-
-    // actions: named reusable actions referenced by string in the machine definition.
     actions: {
         appendUserMessage: assign({
             messages: ({ context, event }) => [
@@ -38,38 +68,16 @@ export const agentMachine = setup({
             ],
         }),
     },
-
-    // actors: named async services the machine can invoke.
-    // fromPromise wraps an async function into an actor that XState can manage —
-    // starting it when a state is entered and collecting the result via onDone/onError.
-    actors: {
-        callLLM: fromPromise(
-            async ({ input }: {
-                input: {
-                    messages: Array<{ role: "user" | "assistant"; content: string }>;
-                    systemPrompt: string;
-                };
-            }) => {
-                return chat(input.messages, input.systemPrompt);
-            }
-        ),
-    },
+    actors: { greetingsNode, improviseThinkingNode },
 }).createMachine({
     id: "agent",
-
-    // initial: the state the machine starts in when the actor is created.
     initial: "idle",
-
-    // context: the machine's shared data. Any state can read it;
-    // only `assign` actions can write to it (immutable updates).
     context: {
         messages: [],
     },
 
     states: {
         idle: {
-            // on: maps event names to transitions.
-            // When this state receives a MESSAGE event, transition to "greetings".
             on: {
                 MESSAGE: {
                     target: "greetings",
@@ -80,25 +88,25 @@ export const agentMachine = setup({
 
         greetings: {
             invoke: {
-                src: "callLLM",
-                input: () => ({
-                    messages: [],
+                src: "greetingsNode",
+                input: ({ context }) => ({
+                    messages: context.messages,
                     systemPrompt: GREETINGS_SYSTEM_PROMPT,
                 }),
                 onDone: {
                     target: "improvise",
-                    actions: [
-                        ({ event }: { event: { output: string } }) => {
-                            console.log(`\n${event.output}\n`);
-                        },
-                        assign({
-                            messages: ({ context, event }) => [
+                    actions: enqueueActions(({ enqueue, event }) => {
+                        const { greeting, needsFollowUp } = (event as { output: { greeting: string; needsFollowUp: boolean } }).output;
+                        enqueue.assign({
+                            messages: ({ context }) => [
                                 ...context.messages,
-                                { role: "assistant" as const, content: event.output },
+                                { role: "assistant" as const, content: greeting },
                             ],
-                        }),
-                        raise({ type: "PARTIALLY_RESPONDED" }),
-                    ],
+                        });
+                        if (needsFollowUp) { //Exemplo de Emissão de Evento Condicional (em cima do retorno da LLM)
+                            enqueue.raise({ type: "PARTIALLY_RESPONDED" });
+                        }
+                    }),
                 },
                 onError: {
                     target: "improvise",
@@ -113,27 +121,27 @@ export const agentMachine = setup({
             },
         },
 
-        // A compound state: has its own child states (listening, thinking).
-        // From the outside, other states only see "improvise" — the children are
-        // an internal concern.
         improvise: {
             initial: "listening",
             states: {
+                listening: {
+                    on: {
+                        PARTIALLY_RESPONDED: {
+                            target: "thinking",
+                        },
+                        MESSAGE: {
+                            target: "thinking",
+                            actions: "appendUserMessage",
+                        },
+                    },
+                },
                 thinking: {
-                    // invoke: starts an actor (async service) when this state is entered.
-                    // The machine stays in this state until the actor completes.
-                    // Does not handle MESSAGE — the agent is busy processing.
-                    // src: references the named actor from setup().
-                    // input: data passed to the actor — here, the conversation history.
                     invoke: {
-                        src: "callLLM",
+                        src: "improviseThinkingNode",
                         input: ({ context }) => ({
                             messages: context.messages,
                             systemPrompt: IMPROVISE_SYSTEM_PROMPT,
                         }),
-
-                        // onDone: transition taken when the invoked actor resolves.
-                        // event.output contains the resolved value (the LLM reply).
                         onDone: {
                             target: "listening",
                             actions: [
@@ -148,9 +156,6 @@ export const agentMachine = setup({
                                 }),
                             ],
                         },
-
-                        // onError: transition taken when the invoked actor rejects.
-                        // event.error contains the thrown error.
                         onError: {
                             target: "listening",
                             actions: ({ event }) => {
@@ -160,18 +165,6 @@ export const agentMachine = setup({
                                     "\n"
                                 );
                             },
-                        },
-                    },
-                },
-
-                listening: {
-                    on: {
-                        PARTIALLY_RESPONDED: {
-                            target: "thinking",
-                        },
-                        MESSAGE: {
-                            target: "thinking",
-                            actions: "appendUserMessage",
                         },
                     },
                 },
