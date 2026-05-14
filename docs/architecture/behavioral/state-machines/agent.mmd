@@ -13,7 +13,7 @@ stateDiagram-v2
 
     idle --> greetings: MESSAGE / appendUserMessage
 
-    greetings --> improvise: onDone / print greeting, append, raise PARTIALLY_RESPONDED
+    greetings --> improvise: onDone / append greeting, raise PARTIALLY_RESPONDED if needsFollowUp
 
     state improvise {
         [*] --> listening
@@ -25,13 +25,13 @@ stateDiagram-v2
     }
 
     note right of greetings
-        Invoke state.
-        Calls LLM with GREETINGS_SYSTEM_PROMPT.
-        Raises PARTIALLY_RESPONDED on completion.
+        Invokes greetingsNode actor (OpenRouter API).
+        Returns { greeting, needsFollowUp }.
+        Raises PARTIALLY_RESPONDED only if needsFollowUp.
     end note
 
     note right of thinking
-        Invokes callLLM actor (OpenRouter API)
+        Invokes improviseThinkingNode actor (OpenRouter API)
         with IMPROVISE_SYSTEM_PROMPT.
         Does not accept MESSAGE while processing.
     end note

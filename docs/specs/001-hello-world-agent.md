@@ -16,7 +16,8 @@ The agent must always identify itself as Atlas. It must never use a different na
 ## States
 
 ```
-idle ──MESSAGE──▶ greetings ──onDone + raise(PARTIALLY_RESPONDED)──▶ improvise
+idle ──MESSAGE──▶ greetings ──onDone──▶ improvise
+                  (raises PARTIALLY_RESPONDED only if needsFollowUp)
                                          ├── listening ──MESSAGE──────────────▶ thinking
                                          │             ──PARTIALLY_RESPONDED──▶ thinking
                                          └── thinking ──onDone───────────────▶ listening
@@ -30,9 +31,13 @@ idle ──MESSAGE──▶ greetings ──onDone + raise(PARTIALLY_RESPONDED)�
 
 ### `greetings` (invoke state)
 
-- Invoke: promise actor that calls `chat([], GREETINGS_SYSTEM_PROMPT)` — empty messages array, greeting system prompt instructs Atlas to introduce itself.
-- `onDone`: print the greeting to stdout, append `{ role: "assistant", content }` to `context.messages`, raise `PARTIALLY_RESPONDED`, transition to `improvise`.
+- Invoke: `greetUser` actor — calls `chat(context.messages, GREETINGS_SYSTEM_PROMPT)` and parses the JSON response into `{ greeting: string, needsFollowUp: boolean }`. The LLM sees the user's message and classifies whether it requires follow-up beyond the greeting.
+- `onDone`:
+  - Print `greeting` to stdout, append `{ role: "assistant", content: greeting }` to `context.messages`.
+  - If `needsFollowUp` is `true`: raise `PARTIALLY_RESPONDED`.
+  - Transition to `improvise`.
 - `onError`: print error to stderr, transition to `improvise`.
+- Fallback: if JSON parsing fails, treat the raw response as greeting, `needsFollowUp = false`.
 - Does **not** handle `MESSAGE` — the agent is generating its greeting.
 
 ### `improvise` (compound state)
@@ -82,7 +87,7 @@ idle ──MESSAGE──▶ greetings ──onDone + raise(PARTIALLY_RESPONDED)�
 
 Each state that invokes the LLM provides its own system prompt, defined as a module-level constant in `machine.ts`:
 
-- **`GREETINGS_SYSTEM_PROMPT`**: Instructs Atlas to greet the user in Portuguese and introduce itself briefly. Must only greet — the user's message will be processed by the next state.
+- **`GREETINGS_SYSTEM_PROMPT`**: Instructs Atlas to respond in JSON `{ greeting, needsFollowUp }`. Greet in Portuguese, introduce itself briefly. Must only greet in the `greeting` field — not answer questions. `needsFollowUp = true` if the user made a request or asked a question beyond a simple greeting.
 - **`IMPROVISE_SYSTEM_PROMPT`**: Defines Atlas's identity (name, role, tone, language). Instructs it to answer the user's questions.
 
 ## CLI Interface

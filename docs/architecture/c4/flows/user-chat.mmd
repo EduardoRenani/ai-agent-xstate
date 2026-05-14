@@ -12,13 +12,13 @@ sequenceDiagram
     user->>cli: types first message
     cli->>machine: send MESSAGE event
     Note over machine: idle -> greetings (appendUserMessage)
-    machine->>client: invoke callLLM([], GREETINGS_SYSTEM_PROMPT)
+    machine->>client: invoke greetingsNode(messages, GREETINGS_SYSTEM_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
-    client-->>machine: greeting text (event.output)
-    Note over machine: greetings -> improvise.listening (print greeting, append, raise PARTIALLY_RESPONDED)
+    client-->>machine: { greeting, needsFollowUp } (event.output)
+    Note over machine: greetings -> improvise.listening (append greeting, raise PARTIALLY_RESPONDED if needsFollowUp)
     Note over machine: listening -> thinking (PARTIALLY_RESPONDED)
-    machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
+    machine->>client: invoke improviseThinkingNode(messages, IMPROVISE_SYSTEM_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
     client-->>machine: assistant reply (event.output)
@@ -28,7 +28,7 @@ sequenceDiagram
         user->>cli: types question
         cli->>machine: send MESSAGE event
         Note over machine: listening -> thinking (appendUserMessage)
-        machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
+        machine->>client: invoke improviseThinkingNode(messages, IMPROVISE_SYSTEM_PROMPT)
         client->>api: chat.completions.create
         api-->>client: completion response
         client-->>machine: assistant reply

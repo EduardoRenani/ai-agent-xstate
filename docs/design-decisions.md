@@ -81,3 +81,19 @@
 **Correct alternative:** Use `raise()` to emit an event. The receiving state handles the event through a normal `on` transition. The causal link is explicit and visible in the state chart.
 
 **Example:** `greetings` raises `PARTIALLY_RESPONDED` on completion. `improvise.listening` handles it by transitioning to `thinking`. No flag needed — the event is the signal, and context (messages) provides the data.
+
+## 008 — Actor names mirror their state path
+
+**Date:** 2026-05-14
+
+**Rule:** An actor defined in `setup().actors` must be named after the state path that invokes it. A top-level state uses the state name directly (`greetings`). A nested state uses camelCase of the path (`improviseThinking` for `improvise.thinking`).
+
+**Rationale:** An invoke actor is the async behavior of a state (decision 002). XState's `setup()` forces actors to be declared separately from the states that use them, but conceptually they are coupled — the actor *is* what the state does. Naming the actor after its state makes this coupling explicit: reading `src: "improviseThinking"` immediately tells you this is the behavior of `improvise.thinking`, and reading the actor definition at the top of the module tells you which state it belongs to.
+
+**Naming convention:**
+- Top-level state: actor name = state name + `Node` suffix. `greetings` state → `greetingsNode` actor.
+- Nested state: actor name = camelCase of the full path + `Node` suffix. `improvise.thinking` state → `improviseThinkingNode` actor.
+
+The `Node` suffix disambiguates the actor (the async behavior) from the state itself and signals that this is the executable node of that state.
+
+**What this means for `setup()`:** The actors map becomes a thin registry of name→reference pairs. Each actor is defined as a module-level constant next to its system prompt (per decision 005), grouped by the state it belongs to.
