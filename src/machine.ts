@@ -1,11 +1,13 @@
 import { setup, assign, fromPromise, enqueueActions } from "xstate";
 import { chat } from "./openrouter.js";
+import type { Message, ToolCall, ToolDefinition } from "./openrouter.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
 export type LLMInput = {
-    messages: Array<{ role: "user" | "assistant"; content: string }>;
+    messages: Message[];
     systemPrompt: string;
+    tools?: ToolDefinition[];
 };
 
 // ── Greetings ────────────────────────────────────────────────────────
@@ -23,7 +25,11 @@ const GREETINGS_SYSTEM_PROMPT = [
 ].join("\n");
 
 const greetingsNode = fromPromise(async ({ input }: { input: LLMInput }): Promise<{ greeting: string; needsFollowUp: boolean }> => {
-    const raw = await chat(input.messages, input.systemPrompt);
+    const response = await chat(input.messages, input.systemPrompt);
+    if (!response.content) {
+        throw new Error("Greetings received tool_calls instead of content");
+    }
+    const raw = response.content;
     try {
         const parsed = JSON.parse(raw) as { greeting: string; needsFollowUp: boolean };
         return {
@@ -44,16 +50,67 @@ const IMPROVISE_SYSTEM_PROMPT = [
     "Responda às perguntas do usuário de forma útil e concisa.",
 ].join(" ");
 
-const improviseThinkingNode = fromPromise(async ({ input }: { input: LLMInput }) =>
-    chat(input.messages, input.systemPrompt)
-);
+const IMPROVISE_TOOLS: ToolDefinition[] = [
+    {
+        type: "function",
+        function: {
+            name: "get_current_time",
+            description: "Returns the current date and time in ISO 8601 format.",
+            parameters: { type: "object", properties: {}, required: [] },
+        },
+    },
+];
+
+const TOOL_REGISTRY: Record<string, (args: Record<string, unknown>) => string> = {
+    get_current_time: () => new Date().toISOString(),
+};
+
+const improviseThinkingNode = fromPromise(async ({ input }: { input: LLMInput }): Promise<Message[]> => {
+    const messages = [...input.messages];
+    const newMessages: Message[] = [];
+
+    while (true) {
+        const response = await chat(messages, input.systemPrompt, input.tools);
+
+        if (!response.toolCalls) {
+            const assistantMessage: Message = { role: "assistant", content: response.content };
+            messages.push(assistantMessage);
+            newMessages.push(assistantMessage);
+            break;
+        }
+
+        const assistantMessage: Message = { role: "assistant", content: null, tool_calls: response.toolCalls };
+        messages.push(assistantMessage);
+        newMessages.push(assistantMessage);
+
+        for (const toolCall of response.toolCalls) {
+            const fn = TOOL_REGISTRY[toolCall.function.name];
+            let result: string;
+            if (fn) {
+                const args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
+                result = fn(args);
+            } else {
+                result = `Unknown tool: ${toolCall.function.name}`;
+            }
+            const toolMessage: Message = {
+                role: "tool",
+                content: result,
+                tool_call_id: toolCall.id,
+            };
+            messages.push(toolMessage);
+            newMessages.push(toolMessage);
+        }
+    }
+
+    return newMessages;
+});
 
 // ── Machine ──────────────────────────────────────────────────────────
 
 export const agentMachine = setup({
     types: {
         context: {} as {
-            messages: Array<{ role: "user" | "assistant"; content: string }>;
+            messages: Message[];
         },
         events: {} as
             | { type: "MESSAGE"; text: string }
@@ -142,17 +199,22 @@ export const agentMachine = setup({
                         input: ({ context }) => ({
                             messages: context.messages,
                             systemPrompt: IMPROVISE_SYSTEM_PROMPT,
+                            tools: IMPROVISE_TOOLS,
                         }),
                         onDone: {
                             target: "listening",
                             actions: [
                                 ({ event }) => {
-                                    console.log(`\n${event.output}\n`);
+                                    const newMessages = event.output as Message[];
+                                    const lastMessage = newMessages[newMessages.length - 1];
+                                    if (lastMessage && lastMessage.role === "assistant" && lastMessage.content !== null) {
+                                        console.log(`\n${lastMessage.content}\n`);
+                                    }
                                 },
                                 assign({
                                     messages: ({ context, event }) => [
                                         ...context.messages,
-                                        { role: "assistant" as const, content: event.output },
+                                        ...(event.output as Message[]),
                                     ],
                                 }),
                             ],
