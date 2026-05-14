@@ -13,7 +13,7 @@ npm start
 
 ## Architecture
 
-### C1 — System Context
+### System Context
 
 ```mermaid
 flowchart LR
@@ -31,47 +31,6 @@ flowchart LR
     classDef external fill:#dc2626,stroke:#991b1b,color:#fff
 ```
 
-### C2 — Containers
-
-```mermaid
-flowchart LR
-    user[User]:::entry
-
-    subgraph system [AI Agent]
-        cli[CLI Entry Point]:::entry
-        machine[Agent State Machine]:::harness
-        openrouterClient[OpenRouter Client]:::code
-    end
-
-    subgraph externals [External Services]
-        openrouter[OpenRouter API]:::external
-    end
-
-    subgraph legend [Legend]
-        lEntry[Entry Point]:::entry
-        lHarness[Harness]:::harness
-        lCode[Code]:::code
-        lExternal[External]:::external
-    end
-
-    user -->|1| cli
-    cli -->|2| machine
-    machine -->|3| openrouterClient
-    openrouterClient -->|4| openrouter
-
-    classDef entry fill:#ea580c,stroke:#9a3412,color:#fff
-    classDef harness fill:#7c3aed,stroke:#5b21b6,color:#fff
-    classDef code fill:#2563eb,stroke:#1e40af,color:#fff
-    classDef external fill:#dc2626,stroke:#991b1b,color:#fff
-```
-
-| # | Origin -> Destination | Protocol | Payload |
-|---|---|---|---|
-| 1 | User -> CLI Entry Point | CLI stdin | plain text message |
-| 2 | CLI Entry Point -> Agent State Machine | in-process `actor.send()` | `{ type: "MESSAGE", text }` |
-| 3 | Agent State Machine -> OpenRouter Client | in-process invoke | `{ messages: Array<{ role, content }>, systemPrompt: string }` |
-| 4 | OpenRouter Client -> OpenRouter API | HTTPS POST (sync) | `chat.completions.create` |
-
 ### Chat Flow
 
 ```mermaid
@@ -85,13 +44,13 @@ sequenceDiagram
     user->>cli: types first message
     cli->>machine: send MESSAGE event
     Note over machine: idle -> greetings (appendUserMessage)
-    machine->>client: invoke callLLM([], GREETINGS_SYSTEM_PROMPT)
+    machine->>client: invoke greetingsNode(messages, GREETINGS_SYSTEM_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
-    client-->>machine: greeting text (event.output)
-    Note over machine: greetings -> improvise.listening (print greeting, append, raise PARTIALLY_RESPONDED)
+    client-->>machine: { greeting, needsFollowUp } (event.output)
+    Note over machine: greetings -> improvise.listening (append greeting, raise PARTIALLY_RESPONDED if needsFollowUp)
     Note over machine: listening -> thinking (PARTIALLY_RESPONDED)
-    machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
+    machine->>client: invoke improviseThinkingNode(messages, IMPROVISE_SYSTEM_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
     client-->>machine: assistant reply (event.output)
@@ -101,7 +60,7 @@ sequenceDiagram
         user->>cli: types question
         cli->>machine: send MESSAGE event
         Note over machine: listening -> thinking (appendUserMessage)
-        machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
+        machine->>client: invoke improviseThinkingNode(messages, IMPROVISE_SYSTEM_PROMPT)
         client->>api: chat.completions.create
         api-->>client: completion response
         client-->>machine: assistant reply
@@ -109,55 +68,20 @@ sequenceDiagram
     end
 ```
 
-### State Machine
+## XState v5 Interface — Takeaways
 
-```mermaid
----
-title: State Machine — Atlas Agent
----
-stateDiagram-v2
-    [*] --> idle
+Observations from building this agent. Not a review of XState as a library — these are conclusions about its programming model for AI agent orchestration.
 
-    idle --> greetings: MESSAGE / appendUserMessage
+### What works
 
-    greetings --> improvise: onDone / print greeting, append, raise PARTIALLY_RESPONDED
+**True state machine, not a flowchart.** XState enforces finite state semantics. A state only handles the events it declares. Everything else is silently ignored. This is the single most important property for an agent: if the LLM is thinking, the machine cannot accept a new user message — not because of a flag, but because the `thinking` state simply does not list `MESSAGE` in its transitions. The constraint is structural, not conditional.
 
-    state improvise {
-        [*] --> listening
+**Hierarchy.** A state can contain a full sub-machine. `improvise` is itself a state machine with `listening` and `thinking` states, but from the parent's perspective it is a single state. This maps naturally to agent behavior modes: the parent machine selects the mode, the child machine runs it. Transitions between modes are parent-level; transitions within a mode are internal to the child.
 
-        listening --> thinking: PARTIALLY_RESPONDED
-        listening --> thinking: MESSAGE / appendUserMessage
-        thinking --> listening: onDone / print reply, append assistant message
-        thinking --> listening: onError / print error
-    }
+**Event-driven with immutable state.** All mutations go through `assign()`, which returns a new context object. Combined with event-driven transitions, this makes every state change traceable: you can always answer "what event caused this transition and what did it change in context."
 
-    note right of greetings
-        Invoke state.
-        Calls LLM with GREETINGS_SYSTEM_PROMPT.
-        Raises PARTIALLY_RESPONDED on completion.
-    end note
+### What doesn't
 
-    note right of thinking
-        Invokes callLLM actor (OpenRouter API)
-        with IMPROVISE_SYSTEM_PROMPT.
-        Does not accept MESSAGE while processing.
-    end note
+**Invoke actors are separated from the states they belong to.** The only way to run async code (LLM calls, tool execution) is via `invoke`, which references an actor declared in `setup()`. The actor definition lives at the top of the file; the state that invokes it lives inside `createMachine()`. In an AI agent, a state's behavior *is* its invoked actor — `greetings` *is* `greetingsNode`, `improvise.thinking` *is* `improviseThinkingNode`. These are conceptual pairs forced apart by the API. We mitigated this with a naming convention (DD-008: actor name mirrors state path + `Node` suffix), but the indirection remains. As the number of states grows, navigating between "what this state does" and "how it does it" requires jumping across the file.
 
-    note right of idle
-        No terminal state.
-        Agent runs until process exit (Ctrl+C).
-    end note
-```
-
-## Project Structure
-
-```
-src/
-  index.ts          # Entry point — readline loop + actor
-  machine.ts        # XState state machine definition
-  openrouter.ts     # OpenAI SDK client configured for OpenRouter
-docs/
-  specs/            # Behavior specifications (source of truth)
-  design-decisions.md
-  architecture/     # C4 + behavioral diagrams (.mmd)
-```
+**Guards and flags erode the machine's readability.** XState supports `cond`/`guard` on transitions and boolean flags in context to alter behavior at runtime. This is the escape hatch that turns a state machine back into a flowchart — the transition graph is no longer what you see in the diagram, because any edge might be conditionally disabled. For agent orchestration, if a transition depends on a runtime condition, it is better to model that condition as a distinct state (making it visible in the diagram) rather than hiding it behind a guard. We avoided guards entirely in this project and used `raise()` with conditional logic inside `enqueueActions` instead, which keeps the state chart honest.
