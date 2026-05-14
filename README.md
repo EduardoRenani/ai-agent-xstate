@@ -1,6 +1,6 @@
 # AI Agent XState
 
-Minimal AI agent (Atlas) built with XState v5 for learning state machine fundamentals. CLI interface that converses in Portuguese via OpenRouter (Claude Sonnet). Each state carries its own system prompt — the agent greets, then processes the user's message.
+Minimal AI agent (Atlas) built with XState v5 to evaluate the library as an orchestration layer for AI agents. CLI interface that converses in Portuguese via OpenRouter (Claude Sonnet). Each state carries its own system prompt — the agent greets, then processes the user's message. Conclusions are documented in the [Takeaways](#xstate-v5-interface--takeaways) section.
 
 ## Setup
 
