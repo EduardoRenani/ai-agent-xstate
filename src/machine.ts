@@ -1,5 +1,5 @@
 import { setup, assign, enqueueActions } from "xstate";
-import type { Message } from "./openrouter.js";
+import type { Message } from "./llm-client.js";
 import { greetingsNode } from "./states/greetings.state.js";
 import { improviseThinkingNode } from "./states/improvise.thinking.state.js";
 

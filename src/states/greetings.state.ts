@@ -1,6 +1,6 @@
 import { fromPromise } from "xstate";
-import { chat } from "../openrouter.js";
-import type { Message } from "../openrouter.js";
+import { chat } from "../llm-client.js";
+import type { Message } from "../llm-client.js";
 
 const SYSTEM_PROMPT = [
     "Você é Atlas, um assistente de propósito geral.",
@@ -16,11 +16,12 @@ const SYSTEM_PROMPT = [
 
 export const greetingsNode = fromPromise(
     async ({ input }: { input: { messages: Message[] } }): Promise<{ greeting: string; needsFollowUp: boolean }> => {
-        const response = await chat(input.messages, SYSTEM_PROMPT);
-        if (!response.content) {
-            throw new Error("Greetings received tool_calls instead of content");
+        const result = await chat(input.messages, SYSTEM_PROMPT);
+        const lastMessage = result[result.length - 1];
+        if (!lastMessage || lastMessage.role !== "assistant" || lastMessage.content === null) {
+            throw new Error("Greetings: unexpected response from chat()");
         }
-        const raw = response.content;
+        const raw = lastMessage.content;
         try {
             const parsed = JSON.parse(raw) as { greeting: string; needsFollowUp: boolean };
             return {

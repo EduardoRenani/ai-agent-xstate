@@ -3,10 +3,10 @@ import { createActor, fromPromise } from "xstate";
 
 // Prevent OpenAI client instantiation at module level (no API key in tests).
 // The mock chat() is never called — actors are replaced via machine.provide().
-vi.mock("../src/openrouter.js", () => ({ chat: vi.fn() }));
+vi.mock("../src/llm-client.js", () => ({ chat: vi.fn() }));
 
 import { agentMachine } from "../src/machine.js";
-import type { Message } from "../src/openrouter.js";
+import type { Message } from "../src/llm-client.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
