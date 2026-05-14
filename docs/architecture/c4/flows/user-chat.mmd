@@ -1,5 +1,5 @@
 %% Spec: c4-doc.md
-%% Modo: inicial
+%% Modo: incremental
 %% Atualizado: 2026-05-14
 %% Fonte: src/index.ts, src/machine.ts, src/openrouter.ts
 sequenceDiagram
@@ -11,13 +11,14 @@ sequenceDiagram
 
     user->>cli: types first message
     cli->>machine: send MESSAGE event
-    Note over machine: idle -> greetings (entry: print greeting)
-    Note over machine: greetings -> improvise.listening (always)
-
-    user->>cli: types question
-    cli->>machine: send MESSAGE event
-    Note over machine: listening -> thinking
-    machine->>client: invoke callLLM(messages)
+    Note over machine: idle -> greetings (appendUserMessage)
+    machine->>client: invoke callLLM([], GREETINGS_SYSTEM_PROMPT)
+    client->>api: chat.completions.create
+    api-->>client: completion response
+    client-->>machine: greeting text (event.output)
+    Note over machine: greetings -> improvise.listening (print greeting, append, raise PARTIALLY_RESPONDED)
+    Note over machine: listening -> thinking (PARTIALLY_RESPONDED)
+    machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
     client-->>machine: assistant reply (event.output)
@@ -26,8 +27,10 @@ sequenceDiagram
     loop conversation continues
         user->>cli: types question
         cli->>machine: send MESSAGE event
-        machine->>client: invoke callLLM(messages)
+        Note over machine: listening -> thinking (appendUserMessage)
+        machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
         client->>api: chat.completions.create
         api-->>client: completion response
         client-->>machine: assistant reply
+        Note over machine: thinking -> listening
     end

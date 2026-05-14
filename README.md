@@ -1,6 +1,6 @@
 # AI Agent XState
 
-Minimal AI agent built with XState v5 for learning state machine fundamentals. CLI interface that converses with the user via OpenRouter (Claude Sonnet).
+Minimal AI agent (Atlas) built with XState v5 for learning state machine fundamentals. CLI interface that converses in Portuguese via OpenRouter (Claude Sonnet). Each state carries its own system prompt — the agent greets, then processes the user's message.
 
 ## Setup
 
@@ -69,7 +69,7 @@ flowchart LR
 |---|---|---|---|
 | 1 | User -> CLI Entry Point | CLI stdin | plain text message |
 | 2 | CLI Entry Point -> Agent State Machine | in-process `actor.send()` | `{ type: "MESSAGE", text }` |
-| 3 | Agent State Machine -> OpenRouter Client | in-process invoke | `Array<{ role, content }>` |
+| 3 | Agent State Machine -> OpenRouter Client | in-process invoke | `{ messages: Array<{ role, content }>, systemPrompt: string }` |
 | 4 | OpenRouter Client -> OpenRouter API | HTTPS POST (sync) | `chat.completions.create` |
 
 ### Chat Flow
@@ -84,13 +84,14 @@ sequenceDiagram
 
     user->>cli: types first message
     cli->>machine: send MESSAGE event
-    Note over machine: idle -> greetings (entry: print greeting)
-    Note over machine: greetings -> improvise.listening (always)
-
-    user->>cli: types question
-    cli->>machine: send MESSAGE event
-    Note over machine: listening -> thinking
-    machine->>client: invoke callLLM(messages)
+    Note over machine: idle -> greetings (appendUserMessage)
+    machine->>client: invoke callLLM([], GREETINGS_SYSTEM_PROMPT)
+    client->>api: chat.completions.create
+    api-->>client: completion response
+    client-->>machine: greeting text (event.output)
+    Note over machine: greetings -> improvise.listening (print greeting, append, raise PARTIALLY_RESPONDED)
+    Note over machine: listening -> thinking (PARTIALLY_RESPONDED)
+    machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
     client-->>machine: assistant reply (event.output)
@@ -99,10 +100,12 @@ sequenceDiagram
     loop conversation continues
         user->>cli: types question
         cli->>machine: send MESSAGE event
-        machine->>client: invoke callLLM(messages)
+        Note over machine: listening -> thinking (appendUserMessage)
+        machine->>client: invoke callLLM(messages, IMPROVISE_SYSTEM_PROMPT)
         client->>api: chat.completions.create
         api-->>client: completion response
         client-->>machine: assistant reply
+        Note over machine: thinking -> listening
     end
 ```
 
@@ -110,31 +113,33 @@ sequenceDiagram
 
 ```mermaid
 ---
-title: State Machine — AI Agent
+title: State Machine — Atlas Agent
 ---
 stateDiagram-v2
     [*] --> idle
 
-    idle --> greetings: MESSAGE
+    idle --> greetings: MESSAGE / appendUserMessage
 
-    greetings --> improvise: always (transient)
+    greetings --> improvise: onDone / print greeting, append, raise PARTIALLY_RESPONDED
 
     state improvise {
         [*] --> listening
 
+        listening --> thinking: PARTIALLY_RESPONDED
         listening --> thinking: MESSAGE / appendUserMessage
         thinking --> listening: onDone / print reply, append assistant message
         thinking --> listening: onError / print error
     }
 
     note right of greetings
-        Transient state.
-        Entry: prints greeting.
-        Immediately transitions out.
+        Invoke state.
+        Calls LLM with GREETINGS_SYSTEM_PROMPT.
+        Raises PARTIALLY_RESPONDED on completion.
     end note
 
     note right of thinking
-        Invokes callLLM actor (OpenRouter API).
+        Invokes callLLM actor (OpenRouter API)
+        with IMPROVISE_SYSTEM_PROMPT.
         Does not accept MESSAGE while processing.
     end note
 

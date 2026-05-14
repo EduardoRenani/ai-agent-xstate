@@ -1,36 +1,38 @@
 ---
-title: State Machine — AI Agent
+title: State Machine — Atlas Agent
 ---
 %% Spec: behavioral-doc.md
-%% Modo: inicial
+%% Modo: incremental
 %% Atualizado: 2026-05-14
 %% Fonte: src/machine.ts
 %% Componente C4: machine (c2-container.mmd)
 %% Container C4: system (c2-container.mmd)
-%% Externos que disparam transicoes: OpenRouter API (via invoke in thinking)
+%% Externos que disparam transicoes: OpenRouter API (via invoke in greetings, thinking)
 stateDiagram-v2
     [*] --> idle
 
-    idle --> greetings: MESSAGE
+    idle --> greetings: MESSAGE / appendUserMessage
 
-    greetings --> improvise: always (transient)
+    greetings --> improvise: onDone / print greeting, append, raise PARTIALLY_RESPONDED
 
     state improvise {
         [*] --> listening
 
+        listening --> thinking: PARTIALLY_RESPONDED
         listening --> thinking: MESSAGE / appendUserMessage
         thinking --> listening: onDone / print reply, append assistant message
         thinking --> listening: onError / print error
     }
 
     note right of greetings
-        Transient state.
-        Entry: prints greeting.
-        Immediately transitions out.
+        Invoke state.
+        Calls LLM with GREETINGS_SYSTEM_PROMPT.
+        Raises PARTIALLY_RESPONDED on completion.
     end note
 
     note right of thinking
-        Invokes callLLM actor (OpenRouter API).
+        Invokes callLLM actor (OpenRouter API)
+        with IMPROVISE_SYSTEM_PROMPT.
         Does not accept MESSAGE while processing.
     end note
 
