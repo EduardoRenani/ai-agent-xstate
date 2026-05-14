@@ -102,17 +102,20 @@ The `Node` suffix disambiguates the actor (the async behavior) from the state it
 
 **Date:** 2026-05-14
 
-**Rule:** Each state that has an invoked actor gets its own file containing all artifacts coupled to that state: system prompt, tool definitions, tool registry, and actor definition. The file is named `<outerstate>.<innerstate>.state.ts` for nested states, or `<state>.state.ts` for top-level states.
+**Rule:** Each state that has an invoked actor gets its own file containing all artifacts coupled to that state. The file is named `<outerstate>.<innerstate>.state.ts` for nested states, or `<state>.state.ts` for top-level states.
+
+**What a state file defines:** The *behavior* of the agent in that state/mode. Behavior is expressed by three artifacts:
+- **Actor** — the async logic that runs when the state is entered.
+- **System prompt** — tells the LLM what mode the agent is in and how to behave.
+- **Tools** — what the agent can do in that mode (capabilities available to the LLM).
+
+These three artifacts are inseparable — together they define *what the agent does* in a given state. That is why they live in the same file.
 
 **Examples:**
 - `greetings` → `src/states/greetings.state.ts`
 - `improvise.thinking` → `src/states/improvise.thinking.state.ts`
 
-**What a state file exports:**
-- The actor (e.g. `greetingsNode`)
-- Optionally, the tool definitions if they need to be referenced elsewhere (e.g. for testing)
-
-System prompts, tool registries, and other internal constants are private to the file — they are implementation details of the actor.
+**What a state file exports:** The actor (e.g. `greetingsNode`). System prompts and tools are private to the file — they are implementation details of the actor's behavior.
 
 **Rationale:** XState's `setup()` forces actors to be declared separately from the states that invoke them (decision 008). As the agent grows, keeping all actors and their prompts/tools in `machine.ts` makes it unreadable. Separating into state files preserves the conceptual coupling (the actor *is* what the state does) while keeping `machine.ts` focused on the machine structure: states, transitions, and context.
 
