@@ -1,59 +1,14 @@
-import { setup, assign, fromPromise, enqueueActions } from "xstate";
-import { chat } from "./openrouter.js";
-
-// ── Types ────────────────────────────────────────────────────────────
-
-export type LLMInput = {
-    messages: Array<{ role: "user" | "assistant"; content: string }>;
-    systemPrompt: string;
-};
-
-// ── Greetings ────────────────────────────────────────────────────────
-
-const GREETINGS_SYSTEM_PROMPT = [
-    "Você é Atlas, um assistente de propósito geral.",
-    "Analise a mensagem do usuário e responda APENAS com JSON neste formato exato:",
-    '{"greeting": "<sua saudação>", "needsFollowUp": <boolean>}',
-    "Regras para greeting: cumprimente o usuário em português do Brasil de forma amigável e direta. Nao responder nada alem de cumprimentar",
-    "Apresente-se brevemente pelo nome. Não responda perguntas — apenas cumprimente.",
-    "Mantenha a saudação curta (1-2 frases).",
-    "Regras para needsFollowUp: true se o usuário fez uma pergunta ou pedido além de cumprimentar.",
-    'false se o usuário apenas cumprimentou (ex: "oi", "olá", "e aí", "bom dia").',
-    "Retorne APENAS o JSON, sem markdown, sem code blocks, sem texto extra.",
-].join("\n");
-
-const greetingsNode = fromPromise(async ({ input }: { input: LLMInput }): Promise<{ greeting: string; needsFollowUp: boolean }> => {
-    const raw = await chat(input.messages, input.systemPrompt);
-    try {
-        const parsed = JSON.parse(raw) as { greeting: string; needsFollowUp: boolean };
-        return {
-            greeting: parsed.greeting,
-            needsFollowUp: parsed.needsFollowUp === true,
-        };
-    } catch {
-        return { greeting: raw, needsFollowUp: false };
-    }
-});
-
-// ── Improvise ────────────────────────────────────────────────────────
-
-const IMPROVISE_SYSTEM_PROMPT = [
-    "Você é Atlas, um assistente de propósito geral.",
-    "Seu tom é amigável e direto.",
-    "Responda sempre em português do Brasil.",
-    "Responda às perguntas do usuário de forma útil e concisa.",
-].join(" ");
-
-const improviseThinkingNode = fromPromise(async ({ input }: { input: LLMInput }) =>
-    chat(input.messages, input.systemPrompt)
-);
+import { setup, assign, enqueueActions } from "xstate";
+import type { Message } from "./llm-client.js";
+import { greetingsNode } from "./states/greetings.state.js";
+import { improviseThinkingNode } from "./states/improvise.thinking.state.js";
 
 // ── Machine ──────────────────────────────────────────────────────────
 
 export const agentMachine = setup({
     types: {
         context: {} as {
-            messages: Array<{ role: "user" | "assistant"; content: string }>;
+            messages: Message[];
         },
         events: {} as
             | { type: "MESSAGE"; text: string }
@@ -91,7 +46,6 @@ export const agentMachine = setup({
                 src: "greetingsNode",
                 input: ({ context }) => ({
                     messages: context.messages,
-                    systemPrompt: GREETINGS_SYSTEM_PROMPT,
                 }),
                 onDone: {
                     target: "improvise",
@@ -104,7 +58,7 @@ export const agentMachine = setup({
                                 { role: "assistant" as const, content: greeting },
                             ],
                         });
-                        if (needsFollowUp) { //Exemplo de Emissão de Evento Condicional (em cima do retorno da LLM)
+                        if (needsFollowUp) {
                             enqueue.raise({ type: "PARTIALLY_RESPONDED" });
                         }
                     }),
@@ -141,18 +95,21 @@ export const agentMachine = setup({
                         src: "improviseThinkingNode",
                         input: ({ context }) => ({
                             messages: context.messages,
-                            systemPrompt: IMPROVISE_SYSTEM_PROMPT,
                         }),
                         onDone: {
                             target: "listening",
                             actions: [
                                 ({ event }) => {
-                                    console.log(`\n${event.output}\n`);
+                                    const newMessages = event.output as Message[];
+                                    const lastMessage = newMessages[newMessages.length - 1];
+                                    if (lastMessage && lastMessage.role === "assistant" && lastMessage.content !== null) {
+                                        console.log(`\n${lastMessage.content}\n`);
+                                    }
                                 },
                                 assign({
                                     messages: ({ context, event }) => [
                                         ...context.messages,
-                                        { role: "assistant" as const, content: event.output },
+                                        ...(event.output as Message[]),
                                     ],
                                 }),
                             ],

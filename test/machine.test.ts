@@ -3,15 +3,16 @@ import { createActor, fromPromise } from "xstate";
 
 // Prevent OpenAI client instantiation at module level (no API key in tests).
 // The mock chat() is never called — actors are replaced via machine.provide().
-vi.mock("../src/openrouter.js", () => ({ chat: vi.fn() }));
+vi.mock("../src/llm-client.js", () => ({ chat: vi.fn() }));
 
-import { agentMachine, type LLMInput } from "../src/machine.js";
+import { agentMachine } from "../src/machine.js";
+import type { Message } from "../src/llm-client.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
 function createTestActor(options: {
     greetingsResult: { greeting: string; needsFollowUp: boolean };
-    improviseResults: string[];
+    improviseResults: Message[][];
 }) {
     let improviseCallIndex = 0;
 
@@ -19,9 +20,9 @@ function createTestActor(options: {
         actors: {
             greetingsNode: fromPromise<
                 { greeting: string; needsFollowUp: boolean },
-                LLMInput
+                { messages: Message[] }
             >(async () => options.greetingsResult),
-            improviseThinkingNode: fromPromise<string, LLMInput>(async () => {
+            improviseThinkingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
                 const result =
                     options.improviseResults[improviseCallIndex] ??
                     options.improviseResults[options.improviseResults.length - 1];
@@ -62,7 +63,9 @@ describe("agentMachine", () => {
                 greeting: "Olá! Sou Atlas.",
                 needsFollowUp: false,
             },
-            improviseResults: ["Brasília."],
+            improviseResults: [
+                [{ role: "assistant", content: "Brasília." }],
+            ],
         });
 
         actor.send({ type: "MESSAGE", text: "oi" });
@@ -96,7 +99,9 @@ describe("agentMachine", () => {
                 greeting: "Olá! Sou Atlas.",
                 needsFollowUp: true,
             },
-            improviseResults: ["Brasília."],
+            improviseResults: [
+                [{ role: "assistant", content: "Brasília." }],
+            ],
         });
 
         actor.send({
@@ -122,7 +127,10 @@ describe("agentMachine", () => {
                 greeting: "Olá! Sou Atlas.",
                 needsFollowUp: true,
             },
-            improviseResults: ["Brasília.", "Cerca de 200 milhões."],
+            improviseResults: [
+                [{ role: "assistant", content: "Brasília." }],
+                [{ role: "assistant", content: "Cerca de 200 milhões." }],
+            ],
         });
 
         actor.send({
@@ -150,6 +158,122 @@ describe("agentMachine", () => {
             { role: "assistant", content: "Brasília." },
             { role: "user", content: "e a população?" },
             { role: "assistant", content: "Cerca de 200 milhões." },
+        ]);
+
+        actor.stop();
+    });
+
+    it("handles single tool call in improvise", async () => {
+        const actor = createTestActor({
+            greetingsResult: {
+                greeting: "Olá! Sou Atlas.",
+                needsFollowUp: false,
+            },
+            improviseResults: [
+                [
+                    { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
+                    { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
+                    { role: "assistant", content: "São 10:30 da manhã!" },
+                ],
+            ],
+        });
+
+        actor.send({ type: "MESSAGE", text: "oi" });
+        await waitForReady(actor);
+
+        actor.send({ type: "MESSAGE", text: "que horas são?" });
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "oi" },
+            { role: "assistant", content: "Olá! Sou Atlas." },
+            { role: "user", content: "que horas são?" },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
+            { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
+            { role: "assistant", content: "São 10:30 da manhã!" },
+        ]);
+
+        actor.stop();
+    });
+
+    it("handles multi-step tool calls in improvise", async () => {
+        const actor = createTestActor({
+            greetingsResult: {
+                greeting: "Olá! Sou Atlas.",
+                needsFollowUp: false,
+            },
+            improviseResults: [
+                [
+                    { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
+                    { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
+                    { role: "assistant", content: null, tool_calls: [{ id: "call_2", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
+                    { role: "tool", content: "2026-05-14T10:30:01Z", tool_call_id: "call_2" },
+                    { role: "assistant", content: "Confirmei duas vezes: são 10:30." },
+                ],
+            ],
+        });
+
+        actor.send({ type: "MESSAGE", text: "oi" });
+        await waitForReady(actor);
+
+        actor.send({ type: "MESSAGE", text: "que horas são? confira duas vezes" });
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "oi" },
+            { role: "assistant", content: "Olá! Sou Atlas." },
+            { role: "user", content: "que horas são? confira duas vezes" },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
+            { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_2", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
+            { role: "tool", content: "2026-05-14T10:30:01Z", tool_call_id: "call_2" },
+            { role: "assistant", content: "Confirmei duas vezes: são 10:30." },
+        ]);
+
+        actor.stop();
+    });
+
+    it("preserves tool messages in context across user turns", async () => {
+        const actor = createTestActor({
+            greetingsResult: {
+                greeting: "Olá! Sou Atlas.",
+                needsFollowUp: false,
+            },
+            improviseResults: [
+                [
+                    { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
+                    { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
+                    { role: "assistant", content: "São 10:30 da manhã!" },
+                ],
+                [
+                    { role: "assistant", content: "Em Tóquio são 00:30 do dia seguinte." },
+                ],
+            ],
+        });
+
+        actor.send({ type: "MESSAGE", text: "oi" });
+        await waitForReady(actor);
+
+        actor.send({ type: "MESSAGE", text: "que horas são?" });
+        await waitForReady(actor);
+
+        actor.send({ type: "MESSAGE", text: "e em Tóquio?" });
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "oi" },
+            { role: "assistant", content: "Olá! Sou Atlas." },
+            { role: "user", content: "que horas são?" },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
+            { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
+            { role: "assistant", content: "São 10:30 da manhã!" },
+            { role: "user", content: "e em Tóquio?" },
+            { role: "assistant", content: "Em Tóquio são 00:30 do dia seguinte." },
         ]);
 
         actor.stop();

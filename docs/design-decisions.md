@@ -96,4 +96,30 @@
 
 The `Node` suffix disambiguates the actor (the async behavior) from the state itself and signals that this is the executable node of that state.
 
-**What this means for `setup()`:** The actors map becomes a thin registry of name→reference pairs. Each actor is defined as a module-level constant next to its system prompt (per decision 005), grouped by the state it belongs to.
+**What this means for `setup()`:** The actors map becomes a thin registry of name→reference pairs. Each actor is defined next to its system prompt and tools (per decisions 005 and 009), grouped by the state it belongs to.
+
+## 009 — State artifacts live in dedicated state files
+
+**Date:** 2026-05-14
+
+**Rule:** Each state that has an invoked actor gets its own file containing all artifacts coupled to that state: system prompt, tool definitions, tool registry, and actor definition. The file is named `<outerstate>.<innerstate>.state.ts` for nested states, or `<state>.state.ts` for top-level states.
+
+**Examples:**
+- `greetings` → `src/states/greetings.state.ts`
+- `improvise.thinking` → `src/states/improvise.thinking.state.ts`
+
+**What a state file exports:**
+- The actor (e.g. `greetingsNode`)
+- Optionally, the tool definitions if they need to be referenced elsewhere (e.g. for testing)
+
+System prompts, tool registries, and other internal constants are private to the file — they are implementation details of the actor.
+
+**Rationale:** XState's `setup()` forces actors to be declared separately from the states that invoke them (decision 008). As the agent grows, keeping all actors and their prompts/tools in `machine.ts` makes it unreadable. Separating into state files preserves the conceptual coupling (the actor *is* what the state does) while keeping `machine.ts` focused on the machine structure: states, transitions, and context.
+
+**What stays in `machine.ts`:**
+- The machine definition (`setup()` + `createMachine()`)
+- Structural actions (e.g. `appendUserMessage`)
+- Type definitions (`LLMInput`, context type)
+- Imports of actors from state files and their registration in `setup().actors`
+
+**Supersedes:** Decision 005's clause "module-level constant in `machine.ts`" is superseded — prompts now live in the state file, not in `machine.ts`. The principle remains (prompts are per-state, not in context), only the location changes.
