@@ -1,109 +1,7 @@
-import { setup, assign, fromPromise, enqueueActions } from "xstate";
-import { chat } from "./openrouter.js";
-import type { Message, ToolCall, ToolDefinition } from "./openrouter.js";
-
-// ── Types ────────────────────────────────────────────────────────────
-
-export type LLMInput = {
-    messages: Message[];
-    systemPrompt: string;
-    tools?: ToolDefinition[];
-};
-
-// ── Greetings ────────────────────────────────────────────────────────
-
-const GREETINGS_SYSTEM_PROMPT = [
-    "Você é Atlas, um assistente de propósito geral.",
-    "Analise a mensagem do usuário e responda APENAS com JSON neste formato exato:",
-    '{"greeting": "<sua saudação>", "needsFollowUp": <boolean>}',
-    "Regras para greeting: cumprimente o usuário em português do Brasil de forma amigável e direta. Nao responder nada alem de cumprimentar",
-    "Apresente-se brevemente pelo nome. Não responda perguntas — apenas cumprimente.",
-    "Mantenha a saudação curta (1-2 frases).",
-    "Regras para needsFollowUp: true se o usuário fez uma pergunta ou pedido além de cumprimentar.",
-    'false se o usuário apenas cumprimentou (ex: "oi", "olá", "e aí", "bom dia").',
-    "Retorne APENAS o JSON, sem markdown, sem code blocks, sem texto extra.",
-].join("\n");
-
-const greetingsNode = fromPromise(async ({ input }: { input: LLMInput }): Promise<{ greeting: string; needsFollowUp: boolean }> => {
-    const response = await chat(input.messages, input.systemPrompt);
-    if (!response.content) {
-        throw new Error("Greetings received tool_calls instead of content");
-    }
-    const raw = response.content;
-    try {
-        const parsed = JSON.parse(raw) as { greeting: string; needsFollowUp: boolean };
-        return {
-            greeting: parsed.greeting,
-            needsFollowUp: parsed.needsFollowUp === true,
-        };
-    } catch {
-        return { greeting: raw, needsFollowUp: false };
-    }
-});
-
-// ── Improvise ────────────────────────────────────────────────────────
-
-const IMPROVISE_SYSTEM_PROMPT = [
-    "Você é Atlas, um assistente de propósito geral.",
-    "Seu tom é amigável e direto.",
-    "Responda sempre em português do Brasil.",
-    "Responda às perguntas do usuário de forma útil e concisa.",
-].join(" ");
-
-const IMPROVISE_TOOLS: ToolDefinition[] = [
-    {
-        type: "function",
-        function: {
-            name: "get_current_time",
-            description: "Returns the current date and time in ISO 8601 format.",
-            parameters: { type: "object", properties: {}, required: [] },
-        },
-    },
-];
-
-const TOOL_REGISTRY: Record<string, (args: Record<string, unknown>) => string> = {
-    get_current_time: () => new Date().toISOString(),
-};
-
-const improviseThinkingNode = fromPromise(async ({ input }: { input: LLMInput }): Promise<Message[]> => {
-    const messages = [...input.messages];
-    const newMessages: Message[] = [];
-
-    while (true) {
-        const response = await chat(messages, input.systemPrompt, input.tools);
-
-        if (!response.toolCalls) {
-            const assistantMessage: Message = { role: "assistant", content: response.content };
-            messages.push(assistantMessage);
-            newMessages.push(assistantMessage);
-            break;
-        }
-
-        const assistantMessage: Message = { role: "assistant", content: null, tool_calls: response.toolCalls };
-        messages.push(assistantMessage);
-        newMessages.push(assistantMessage);
-
-        for (const toolCall of response.toolCalls) {
-            const fn = TOOL_REGISTRY[toolCall.function.name];
-            let result: string;
-            if (fn) {
-                const args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
-                result = fn(args);
-            } else {
-                result = `Unknown tool: ${toolCall.function.name}`;
-            }
-            const toolMessage: Message = {
-                role: "tool",
-                content: result,
-                tool_call_id: toolCall.id,
-            };
-            messages.push(toolMessage);
-            newMessages.push(toolMessage);
-        }
-    }
-
-    return newMessages;
-});
+import { setup, assign, enqueueActions } from "xstate";
+import type { Message } from "./openrouter.js";
+import { greetingsNode } from "./states/greetings.state.js";
+import { improviseThinkingNode } from "./states/improvise.thinking.state.js";
 
 // ── Machine ──────────────────────────────────────────────────────────
 
@@ -148,7 +46,6 @@ export const agentMachine = setup({
                 src: "greetingsNode",
                 input: ({ context }) => ({
                     messages: context.messages,
-                    systemPrompt: GREETINGS_SYSTEM_PROMPT,
                 }),
                 onDone: {
                     target: "improvise",
@@ -161,7 +58,7 @@ export const agentMachine = setup({
                                 { role: "assistant" as const, content: greeting },
                             ],
                         });
-                        if (needsFollowUp) { //Exemplo de Emissão de Evento Condicional (em cima do retorno da LLM)
+                        if (needsFollowUp) {
                             enqueue.raise({ type: "PARTIALLY_RESPONDED" });
                         }
                     }),
@@ -198,8 +95,6 @@ export const agentMachine = setup({
                         src: "improviseThinkingNode",
                         input: ({ context }) => ({
                             messages: context.messages,
-                            systemPrompt: IMPROVISE_SYSTEM_PROMPT,
-                            tools: IMPROVISE_TOOLS,
                         }),
                         onDone: {
                             target: "listening",

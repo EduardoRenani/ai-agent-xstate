@@ -5,7 +5,7 @@ import { createActor, fromPromise } from "xstate";
 // The mock chat() is never called — actors are replaced via machine.provide().
 vi.mock("../src/openrouter.js", () => ({ chat: vi.fn() }));
 
-import { agentMachine, type LLMInput } from "../src/machine.js";
+import { agentMachine } from "../src/machine.js";
 import type { Message } from "../src/openrouter.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -20,9 +20,9 @@ function createTestActor(options: {
         actors: {
             greetingsNode: fromPromise<
                 { greeting: string; needsFollowUp: boolean },
-                LLMInput
+                { messages: Message[] }
             >(async () => options.greetingsResult),
-            improviseThinkingNode: fromPromise<Message[], LLMInput>(async () => {
+            improviseThinkingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
                 const result =
                     options.improviseResults[improviseCallIndex] ??
                     options.improviseResults[options.improviseResults.length - 1];

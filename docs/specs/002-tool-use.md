@@ -56,7 +56,7 @@ type ToolCall = {
 
 No new context fields. The messages array stores everything, including intermediate tool interactions, so the actor receives the full history directly without reconstructing anything.
 
-Assistant messages with `tool_calls` have `content: null` (the LLM chose to call tools instead of responding). Assistant messages with text have no `tool_calls`. These are mutually exclusive in practice.
+Assistant messages with `tool_calls` have `content: null` (the LLM chose to call tools instead of responding). Assistant messages with text have no `tool_calls`. These are mutually exclusive — enforced at the LLM integration layer.
 
 Note: `tool_calls` and `tool_call_id` use snake_case to match the OpenAI API format — these messages are sent directly to the API.
 
@@ -71,27 +71,33 @@ No new events. Tool execution is internal to the actor.
 
 ## LLM Integration
 
-New function in `openrouter.ts`:
+Single function in `openrouter.ts` (unified — no separate `chatWithTools`):
 
 ```ts
-chatWithTools(
+chat(
   messages: Message[],
   systemPrompt: string,
-  tools: ToolDefinition[]
-): Promise<{ content: string | null; toolCalls: ToolCall[] | null }>
+  tools?: ToolDefinition[]
+): Promise<ChatResponse>
 ```
 
-- Passes `tools` to `client.chat.completions.create`.
-- Returns the assistant response structure (content + tool_calls).
+Where `ChatResponse` is a discriminated union:
+```ts
+type ChatResponse =
+  | { content: string; toolCalls: null }
+  | { content: null; toolCalls: ToolCall[] };
+```
+
+- When `tools` is provided, passes them to `client.chat.completions.create`.
+- Returns either text content or tool calls — never both, never neither (throws on invalid API responses).
 - Called in a loop by the actor, not by the machine directly.
-- The existing `chat()` function remains unchanged — `greetingsNode` continues to use it.
 
 ## Tool Definitions
 
-Tool definitions are per-state constants in `machine.ts` (extending DD-005: system prompts are per-state, tool definitions follow the same principle).
+Tool definitions are private constants in the state file `src/states/improvise.thinking.state.ts` (per DD-009: state artifacts live in dedicated state files).
 
 ```ts
-const IMPROVISE_TOOLS: ToolDefinition[] = [
+const TOOLS: ToolDefinition[] = [
   {
     type: "function",
     function: {
@@ -105,7 +111,7 @@ const IMPROVISE_TOOLS: ToolDefinition[] = [
 
 ## Tool Registry
 
-Module-level constant mapping tool names to implementations:
+Private constant in the state file, mapping tool names to implementations:
 
 ```ts
 const TOOL_REGISTRY: Record<string, (args: Record<string, unknown>) => string> = {
@@ -122,9 +128,11 @@ Unknown tool names return an error string (e.g., `"Unknown tool: xyz"`), not a t
 ```
 messages = context.messages (received from machine)
 loop:
-  response = chatWithTools(messages, IMPROVISE_SYSTEM_PROMPT, IMPROVISE_TOOLS)
-  append assistant message to messages
-  if response.toolCalls is empty → break
+  response = chat(messages, SYSTEM_PROMPT, TOOLS)
+  if response.toolCalls is null:
+    append { role: "assistant", content: response.content } to messages
+    break
+  append { role: "assistant", content: null, tool_calls: response.toolCalls } to messages
   for each toolCall:
     result = TOOL_REGISTRY[toolCall.function.name](args)
     append { role: "tool", content: result, tool_call_id: toolCall.id } to messages
@@ -139,8 +147,10 @@ The loop runs inside a single `fromPromise` actor. From the machine's perspectiv
 |---|---|
 | `docs/specs/002-tool-use.md` | New spec (this document) |
 | `docs/specs/README.md` | Add 002 to index |
-| `src/openrouter.ts` | Add `chatWithTools()` |
-| `src/machine.ts` | Update `improviseThinkingNode` to use `chatWithTools` in a loop, add `IMPROVISE_TOOLS` constant, add `TOOL_REGISTRY`, update context message type |
+| `src/openrouter.ts` | Unified `chat()` with optional `tools`, `ChatResponse` discriminated union, `ToolCall`/`ToolDefinition`/`Message` types |
+| `src/states/improvise.thinking.state.ts` | New state file — system prompt, tools, registry, actor with tool loop (per DD-009) |
+| `src/states/greetings.state.ts` | New state file — system prompt, actor (per DD-009) |
+| `src/machine.ts` | Imports actors from state files, updated context message type, simplified `input` (only passes messages) |
 | `test/machine.test.ts` | New tests for tool use scenarios |
 
 ## Out of Scope
