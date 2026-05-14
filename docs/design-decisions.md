@@ -8,11 +8,12 @@
 
 **Problem:** If `greetings` targets `#agent.improvise.thinking` directly, it knows `improvise`'s internal structure. Reorganizing `improvise`'s children silently breaks `greetings`.
 
-**Solution:** `greetings` is a transient state (entry action + `always` transition to `improvise`). It does not carry the user's message into context — its only job is to greet. `improvise` starts at `listening` (its natural initial state), and the user's first question arrives as a normal `MESSAGE` event. This eliminates the need for cross-boundary targeting entirely.
+**Solution:** `greetings` transitions to `improvise` (parent) and raises `PARTIALLY_RESPONDED`. The event is queued and delivered after `improvise.listening` is entered. `listening` handles the event and transitions to `thinking`, which inspects context to continue processing. No state knows the internal structure of another.
 
 **Rejected alternatives:**
 - **Absolute ID targeting** (`#agent.improvise.thinking`): couples the source to the target's internal structure.
 - **`always` guard in child state**: moves the coupling to the target — the child carries routing logic that only exists to serve the source. A state should not carry guards that compensate for another state's transition intent.
+- **Flag + guard**: a boolean in context (e.g. `unprocessedMessage`) checked by an `always` guard. This is an antipattern — it encodes control flow in data instead of using events and transitions. See decision 006.
 
 ## 002 — States are agent modes
 
@@ -48,3 +49,35 @@
 **Counter-example:** The `console.log` in `thinking`'s `onDone` (printing the LLM reply) is the agent's behavior in that state — it's how the agent responds. It stays inline even if it were used only once.
 
 **Rationale:** Each state should contain its own behavior visibly. Extracting behavior into `setup()` separates the "what" from the "where", making the machine harder to read as a description of agent modes. `setup()` is infrastructure; states are behavior.
+
+## 005 — System prompts are per-state constants in the machine module
+
+**Date:** 2026-05-14
+
+**Rule:** Each state that invokes the LLM defines its own system prompt as a module-level constant in `machine.ts`. System prompts are not stored in context, not passed from `index.ts`, and not placed in `setup()`.
+
+**Rationale:** A system prompt defines the agent's behavior in a specific state — it tells the LLM what mode the agent is in. Per design decision 002, states are agent modes, so the system prompt is part of the state's behavior data. Placing prompts as module-level constants keeps them visible near the machine definition without cluttering `setup()` (which is for structural/generic infrastructure, per decision 004).
+
+**Why not in context:** System prompts are static per state, not accumulated data. Context is for data that evolves across transitions (like `messages`). Mixing static configuration with dynamic state would blur the distinction.
+
+**Why not in `setup()`:** `setup()` is for reusable structural elements (actions, actors, guards). A system prompt is specific to one state's invocation — it is behavior, not infrastructure.
+
+## 006 — Events are facts
+
+**Date:** 2026-05-14
+
+**Principle:** Events represent facts — something that happened. They are named in past tense or as factual observations (`MESSAGE`, `PARTIALLY_RESPONDED`), never as imperative commands (`CONTINUE`, `PROCESS`, `START`). The machine's behavior is determined by which events it accepts and how it reacts, not by being told what to do.
+
+**Naming test:** If an event name reads as an order to the machine ("do this"), it is wrong. It should read as a report ("this happened"). `PARTIALLY_RESPONDED` is a fact — the agent partially responded. `CONTINUE` is a command — it tells the machine what to do next.
+
+## 007 — Flag + guard is an antipattern for control flow
+
+**Date:** 2026-05-14
+
+**Rule:** Do not use booleans in context combined with `always` guards to route transitions between states.
+
+**Problem:** A flag (e.g. `unprocessedMessage: boolean`) set by one state and read by an `always` guard in another encodes control flow in data. The causal link between states is invisible in the state chart — it only appears by tracing context mutations. Debugging requires reading the code instead of reading the chart.
+
+**Correct alternative:** Use `raise()` to emit an event. The receiving state handles the event through a normal `on` transition. The causal link is explicit and visible in the state chart.
+
+**Example:** `greetings` raises `PARTIALLY_RESPONDED` on completion. `improvise.listening` handles it by transitioning to `thinking`. No flag needed — the event is the signal, and context (messages) provides the data.

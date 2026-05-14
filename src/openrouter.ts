@@ -6,11 +6,17 @@ const client = new OpenAI({
 });
 
 export async function chat(
-    messages: Array<{ role: "user" | "assistant"; content: string }>
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    systemPrompt?: string
 ): Promise<string> {
+    const apiMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> =
+        systemPrompt
+            ? [{ role: "system", content: systemPrompt }, ...messages]
+            : [...messages];
+
     const response = await client.chat.completions.create({
         model: "anthropic/claude-sonnet-4",
-        messages,
+        messages: apiMessages,
     });
 
     return response.choices[0]?.message?.content ?? "";
