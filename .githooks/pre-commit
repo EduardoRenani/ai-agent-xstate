@@ -1,0 +1,15 @@
+#!/bin/sh
+# Pre-commit: re-sync README.md mermaid fences from .mmd source files.
+# Re-stages README only if the sync script actually modified it, so unrelated
+# unstaged README edits are not silently pulled into this commit.
+
+set -e
+
+before=$(git hash-object README.md 2>/dev/null || echo "")
+node scripts/sync-mermaid.mjs
+after=$(git hash-object README.md)
+
+if [ "$before" != "$after" ]; then
+    echo "[pre-commit] README.md mermaid fences re-synced from .mmd sources; re-staging."
+    git add README.md
+fi

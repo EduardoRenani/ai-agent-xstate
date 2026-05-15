@@ -5,7 +5,9 @@
     "type": "module",
     "scripts": {
         "start": "tsx src/index.ts",
-        "test": "vitest run"
+        "test": "vitest run",
+        "sync:diagrams": "node scripts/sync-mermaid.mjs",
+        "prepare": "git config core.hooksPath .githooks"
     },
     "dependencies": {
         "xstate": "^5",
