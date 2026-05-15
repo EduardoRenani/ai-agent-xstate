@@ -68,6 +68,34 @@ sequenceDiagram
     end
 ```
 
+## Design Decisions
+
+Full list in [`docs/design-decisions.md`](docs/design-decisions.md). The most important ones:
+
+### States are agent modes (DD-002)
+
+Each state represents a mode the agent operates in — `greetings`, `socratic`, `improvising`. Every mode has a **goal**: greetings aims to greet the user, socratic aims to teach and verify understanding, improvising aims to answer a general question. The mode's behavior is fully contained within its compound state and state file.
+
+### Invoke is behavior, onDone is routing (DD-010, DD-011)
+
+The invoked actor *is* the agent's behavior in that mode — it calls the LLM, performs side effects (e.g. printing the response), and returns a typed output. `onDone` does two things and nothing else: assigns the output to context (plumbing) and routes to the next state via inline guards on the output (routing).
+
+### Three exits from a mode
+
+When an actor completes, its output determines one of three outcomes:
+
+1. **Goal achieved** — the mode accomplished what it set out to do. The machine exits the mode and transitions to a success state (e.g. `done` → `classifying`).
+2. **Abandoned** — the goal was not achieved, but a quit criterion was met (user asked to stop, retry limit reached). The machine exits the mode without achieving the goal.
+3. **Retry** — the goal was not achieved and no quit criterion was met. The machine stays in the mode and tries again.
+
+This is formalized through `ModeGoalEvaluation` (`"achieved" | "retry" | "abandoned"`) — the actor's output is inspected by inline guards on `onDone`, and the first matching guard determines the transition. The LLM's judgment becomes a typed value that the machine routes on declaratively.
+
+Not every mode uses all three exits. One-shot modes like `greetings` and `improvising` always achieve their goal on first execution (single `onDone` → `done`). Multi-turn modes like `socratic` use the full three-exit pattern in their evaluating sub-state.
+
+### Behavior lives in the actor, not in transitions (DD-011)
+
+Observable side effects — printing to stdout, logging, anything the user perceives — are performed inside the actor, not in `onDone` actions. The actor has the data and the context to act; `onDone` should not carry behavior that belongs to the mode.
+
 ## XState v5 Interface — Takeaways
 
 Observations from building this agent. Not a review of XState as a library — these are conclusions about its programming model for AI agent orchestration.
@@ -76,12 +104,10 @@ Observations from building this agent. Not a review of XState as a library — t
 
 **True state machine, not a flowchart.** XState enforces finite state semantics. A state only handles the events it declares. Everything else is silently ignored. This is the single most important property for an agent: if the LLM is thinking, the machine cannot accept a new user message — not because of a flag, but because the `thinking` state simply does not list `MESSAGE` in its transitions. The constraint is structural, not conditional.
 
-**Hierarchy.** A state can contain a full sub-machine. `improvise` is itself a state machine with `listening` and `thinking` states, but from the parent's perspective it is a single state. This maps naturally to agent behavior modes: the parent machine selects the mode, the child machine runs it. Transitions between modes are parent-level; transitions within a mode are internal to the child.
+**Hierarchy.** A state can contain a full sub-machine. `improvising` is itself a state machine with `thinking` and `done` states, but from the parent's perspective it is a single state. This maps naturally to agent behavior modes: the parent machine selects the mode, the child machine runs it. Transitions between modes are parent-level; transitions within a mode are internal to the child.
 
 **Event-driven with immutable state.** All mutations go through `assign()`, which returns a new context object. Combined with event-driven transitions, this makes every state change traceable: you can always answer "what event caused this transition and what did it change in context."
 
 ### What doesn't
 
-**Invoke actors are separated from the states they belong to.** The only way to run async code (LLM calls, tool execution) is via `invoke`, which references an actor declared in `setup()`. The actor definition lives at the top of the file; the state that invokes it lives inside `createMachine()`. In an AI agent, a state's behavior *is* its invoked actor — `greetings` *is* `greetingsNode`, `improvise.thinking` *is* `improviseThinkingNode`. These are conceptual pairs forced apart by the API. We mitigated this with a naming convention (DD-008: actor name mirrors state path + `Node` suffix), but the indirection remains. As the number of states grows, navigating between "what this state does" and "how it does it" requires jumping across the file.
-
-**Guards and flags erode the machine's readability.** XState supports `cond`/`guard` on transitions and boolean flags in context to alter behavior at runtime. This is the escape hatch that turns a state machine back into a flowchart — the transition graph is no longer what you see in the diagram, because any edge might be conditionally disabled. For agent orchestration, if a transition depends on a runtime condition, it is better to model that condition as a distinct state (making it visible in the diagram) rather than hiding it behind a guard. We avoided guards entirely in this project and used `raise()` with conditional logic inside `enqueueActions` instead, which keeps the state chart honest.
+**Invoke actors are separated from the states they belong to.** The only way to run async code (LLM calls, tool execution) is via `invoke`, which references an actor declared in `setup()`. The actor definition lives at the top of the file; the state that invokes it lives inside `createMachine()`. In an AI agent, a state's behavior *is* its invoked actor — `greetings.thinking` *is* `greetingsThinkingNode`. These are conceptual pairs forced apart by the API. We mitigated this with a naming convention (DD-008: actor name mirrors state path + `Node` suffix) and dedicated state files (DD-009), but the indirection remains.
