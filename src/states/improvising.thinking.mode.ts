@@ -18,7 +18,7 @@ const TOOLS: Record<string, Tool> = {
     },
 };
 
-export const improvisingThinkingNode = fromPromise(
+export const improvisingThinkingMode = fromPromise(
     async ({ input }: { input: { messages: Message[] } }): Promise<ModeOutput<{ messages: Message[] }>> => {
         const messages = await chat(input.messages, SYSTEM_PROMPT, TOOLS);
         const last = messages[messages.length - 1];

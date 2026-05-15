@@ -11,7 +11,7 @@ const SYSTEM_PROMPT = [
     "IMPORTANTE: Apenas cumprimente. Se o usuario fez uma pergunta ou pedido junto da saudacao, ignore completamente — nao responda, nao mencione, nao reconheca. Outro modulo cuidara disso.",
 ].join(" ");
 
-export const greetingsThinkingNode = fromPromise(
+export const greetingsThinkingMode = fromPromise(
     async ({ input }: { input: { messages: Message[] } }): Promise<ModeOutput<{ messages: Message[] }>> => {
         const messages = await chat(input.messages, SYSTEM_PROMPT);
         const last = messages[messages.length - 1];

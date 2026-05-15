@@ -18,7 +18,7 @@ const SYSTEM_PROMPT = [
     "Retorne APENAS o JSON, sem markdown, sem code blocks, sem texto extra.",
 ].join("\n");
 
-export const socraticEvaluatingNode = fromPromise(
+export const socraticEvaluatingMode = fromPromise(
     async ({ input }: { input: { messages: Message[] } }): Promise<ModeOutput<{ messages: Message[] }>> => {
         const result = await chat(input.messages, SYSTEM_PROMPT);
         const lastMessage = result[result.length - 1];

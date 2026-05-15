@@ -40,7 +40,7 @@ function formatForClassification(messages: Message[]): Message[] {
     ];
 }
 
-export const classifyingNode = fromPromise(
+export const classifyingMode = fromPromise(
     async ({ input }: { input: { messages: Message[] } }): Promise<ModeOutput<ClassificationPayload>> => {
         // First message detection: exactly one user message and no assistant messages.
         const userMessages = input.messages.filter((m) => m.role === "user");

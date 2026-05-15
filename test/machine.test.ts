@@ -29,32 +29,32 @@ function createTestActor(options: {
 
     const testMachine = agentMachine.provide({
         actors: {
-            classifyingNode: fromPromise<ClassifyResult, { messages: Message[] }>(async () => {
+            classifyingMode: fromPromise<ClassifyResult, { messages: Message[] }>(async () => {
                 const result =
                     options.classifyResults[classifyIndex] ??
                     options.classifyResults[options.classifyResults.length - 1];
                 classifyIndex++;
                 return result;
             }),
-            greetingsThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            greetingsThinkingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.greetingsResults ?? [];
                 const result = results[greetingsIndex] ?? results[results.length - 1];
                 greetingsIndex++;
                 return result;
             }),
-            socraticTeachingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            socraticTeachingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.socraticTeachingResults ?? [];
                 const result = results[socraticTeachingIndex] ?? results[results.length - 1];
                 socraticTeachingIndex++;
                 return result;
             }),
-            socraticEvaluatingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            socraticEvaluatingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.socraticEvaluatingResults ?? [];
                 const result = results[socraticEvaluatingIndex] ?? results[results.length - 1];
                 socraticEvaluatingIndex++;
                 return result;
             }),
-            improvisingThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            improvisingThinkingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.improvisingResults ?? [];
                 const result = results[improvisingIndex] ?? results[results.length - 1];
                 improvisingIndex++;

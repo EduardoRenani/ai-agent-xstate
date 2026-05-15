@@ -1,11 +1,11 @@
 import { setup, assign, createActor } from "xstate";
 import type { Message } from "./llm-client.js";
 import type { ModeOutput } from "./types.js";
-import { classifyingNode } from "./states/classifying.state.js";
-import { greetingsThinkingNode } from "./states/greetings.thinking.state.js";
-import { socraticTeachingNode } from "./states/socratic.teaching.state.js";
-import { socraticEvaluatingNode } from "./states/socratic.evaluating.state.js";
-import { improvisingThinkingNode } from "./states/improvising.thinking.state.js";
+import { classifyingMode } from "./states/classifying.mode.js";
+import { greetingsThinkingMode } from "./states/greetings.thinking.mode.js";
+import { socraticTeachingMode } from "./states/socratic.teaching.mode.js";
+import { socraticEvaluatingMode } from "./states/socratic.evaluating.mode.js";
+import { improvisingThinkingMode } from "./states/improvising.thinking.mode.js";
 
 // ── Machine ──────────────────────────────────────────────────────────
 
@@ -25,11 +25,11 @@ export const agentMachine = setup({
         }),
     },
     actors: {
-        classifyingNode,
-        greetingsThinkingNode,
-        socraticTeachingNode,
-        socraticEvaluatingNode,
-        improvisingThinkingNode,
+        classifyingMode,
+        greetingsThinkingMode,
+        socraticTeachingMode,
+        socraticEvaluatingMode,
+        improvisingThinkingMode,
     },
 }).createMachine({
     id: "agent",
@@ -50,7 +50,7 @@ export const agentMachine = setup({
 
         classifying: {
             invoke: {
-                src: "classifyingNode",
+                src: "classifyingMode",
                 input: ({ context }) => ({
                     messages: context.messages,
                 }),
@@ -79,7 +79,7 @@ export const agentMachine = setup({
             states: {
                 thinking: {
                     invoke: {
-                        src: "greetingsThinkingNode",
+                        src: "greetingsThinkingMode",
                         input: ({ context }) => ({
                             messages: context.messages,
                         }),
@@ -104,7 +104,7 @@ export const agentMachine = setup({
             states: {
                 teaching: {
                     invoke: {
-                        src: "socraticTeachingNode",
+                        src: "socraticTeachingMode",
                         input: ({ context }) => ({
                             messages: context.messages,
                         }),
@@ -129,7 +129,7 @@ export const agentMachine = setup({
                 },
                 evaluating: {
                     invoke: {
-                        src: "socraticEvaluatingNode",
+                        src: "socraticEvaluatingMode",
                         input: ({ context }) => ({
                             messages: context.messages,
                         }),
@@ -176,7 +176,7 @@ export const agentMachine = setup({
             states: {
                 thinking: {
                     invoke: {
-                        src: "improvisingThinkingNode",
+                        src: "improvisingThinkingMode",
                         input: ({ context }) => ({
                             messages: context.messages,
                         }),
