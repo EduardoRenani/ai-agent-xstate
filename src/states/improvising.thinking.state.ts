@@ -3,10 +3,10 @@ import { chat } from "../llm-client.js";
 import type { Message, Tool } from "../llm-client.js";
 
 const SYSTEM_PROMPT = [
-    "Você é Atlas, um assistente de propósito geral.",
-    "Seu tom é amigável e direto.",
-    "Responda sempre em português do Brasil.",
-    "Responda às perguntas do usuário de forma útil e concisa.",
+    "Voce e Atlas, um assistente de proposito geral.",
+    "Seu tom e amigavel e direto.",
+    "Responda sempre em portugues do Brasil.",
+    "Responda as perguntas do usuario de forma util e concisa.",
 ].join(" ");
 
 const TOOLS: Record<string, Tool> = {
@@ -17,8 +17,13 @@ const TOOLS: Record<string, Tool> = {
     },
 };
 
-export const improviseThinkingNode = fromPromise(
+export const improvisingThinkingNode = fromPromise(
     async ({ input }: { input: { messages: Message[] } }): Promise<Message[]> => {
-        return chat(input.messages, SYSTEM_PROMPT, TOOLS);
+        const result = await chat(input.messages, SYSTEM_PROMPT, TOOLS);
+        const last = result[result.length - 1];
+        if (last && last.role === "assistant" && last.content !== null) {
+            console.log(`\n${last.content}\n`);
+        }
+        return result;
     }
 );

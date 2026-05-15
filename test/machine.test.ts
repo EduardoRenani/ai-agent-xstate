@@ -7,26 +7,57 @@ vi.mock("../src/llm-client.js", () => ({ chat: vi.fn() }));
 
 import { agentMachine } from "../src/machine.js";
 import type { Message } from "../src/llm-client.js";
+import type { ModeGoalEvaluation } from "../src/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+type ClassifyResult = { intent: "greetings" | "socratic" | "improvise" | "none" };
+type EvalResult = { evaluation: ModeGoalEvaluation; messages: Message[] };
+
 function createTestActor(options: {
-    greetingsResult: { greeting: string; needsFollowUp: boolean };
-    improviseResults: Message[][];
+    classifyResults: ClassifyResult[];
+    greetingsResults?: Message[][];
+    socraticTeachingResults?: Message[][];
+    socraticEvaluatingResults?: EvalResult[];
+    improvisingResults?: Message[][];
 }) {
-    let improviseCallIndex = 0;
+    let classifyIndex = 0;
+    let greetingsIndex = 0;
+    let socraticTeachingIndex = 0;
+    let socraticEvaluatingIndex = 0;
+    let improvisingIndex = 0;
 
     const testMachine = agentMachine.provide({
         actors: {
-            greetingsNode: fromPromise<
-                { greeting: string; needsFollowUp: boolean },
-                { messages: Message[] }
-            >(async () => options.greetingsResult),
-            improviseThinkingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
+            classifyingNode: fromPromise<ClassifyResult, { messages: Message[] }>(async () => {
                 const result =
-                    options.improviseResults[improviseCallIndex] ??
-                    options.improviseResults[options.improviseResults.length - 1];
-                improviseCallIndex++;
+                    options.classifyResults[classifyIndex] ??
+                    options.classifyResults[options.classifyResults.length - 1];
+                classifyIndex++;
+                return result;
+            }),
+            greetingsThinkingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
+                const results = options.greetingsResults ?? [];
+                const result = results[greetingsIndex] ?? results[results.length - 1];
+                greetingsIndex++;
+                return result;
+            }),
+            socraticTeachingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
+                const results = options.socraticTeachingResults ?? [];
+                const result = results[socraticTeachingIndex] ?? results[results.length - 1];
+                socraticTeachingIndex++;
+                return result;
+            }),
+            socraticEvaluatingNode: fromPromise<EvalResult, { messages: Message[] }>(async () => {
+                const results = options.socraticEvaluatingResults ?? [];
+                const result = results[socraticEvaluatingIndex] ?? results[results.length - 1];
+                socraticEvaluatingIndex++;
+                return result;
+            }),
+            improvisingThinkingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
+                const results = options.improvisingResults ?? [];
+                const result = results[improvisingIndex] ?? results[results.length - 1];
+                improvisingIndex++;
                 return result;
             }),
         },
@@ -37,16 +68,17 @@ function createTestActor(options: {
     return actor;
 }
 
-function waitForReady(
-    actor: ReturnType<typeof createTestActor>
+function waitForState(
+    actor: ReturnType<typeof createTestActor>,
+    predicate: (snapshot: ReturnType<ReturnType<typeof createTestActor>["getSnapshot"]>) => boolean
 ): Promise<void> {
     return new Promise((resolve) => {
-        if (actor.getSnapshot().can({ type: "MESSAGE", text: "" })) {
+        if (predicate(actor.getSnapshot())) {
             resolve();
             return;
         }
         const sub = actor.subscribe((snapshot) => {
-            if (snapshot.can({ type: "MESSAGE", text: "" })) {
+            if (predicate(snapshot)) {
                 sub.unsubscribe();
                 resolve();
             }
@@ -54,226 +86,293 @@ function waitForReady(
     });
 }
 
+function waitForReady(actor: ReturnType<typeof createTestActor>): Promise<void> {
+    return waitForState(actor, (s) => s.can({ type: "MESSAGE", text: "" }));
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("agentMachine", () => {
-    it("handles simple greeting then separate question", async () => {
+    it("handles simple greeting then question", async () => {
         const actor = createTestActor({
-            greetingsResult: {
-                greeting: "Olá! Sou Atlas.",
-                needsFollowUp: false,
-            },
-            improviseResults: [
-                [{ role: "assistant", content: "Brasília." }],
+            classifyResults: [
+                { intent: "greetings" },
+                { intent: "none" },
+                { intent: "improvise" },
+                { intent: "none" },
+            ],
+            greetingsResults: [
+                [{ role: "assistant", content: "Ola! Sou Atlas." }],
+            ],
+            improvisingResults: [
+                [{ role: "assistant", content: "Brasilia." }],
             ],
         });
 
+        // First message → classifying (greetings) → greetings → classifying (none) → listening
         actor.send({ type: "MESSAGE", text: "oi" });
         await waitForReady(actor);
 
         let snapshot = actor.getSnapshot();
-        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
+        expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
+            { role: "assistant", content: "Ola! Sou Atlas." },
         ]);
 
+        // Second message → classifying (improvise) → improvising → classifying (none) → listening
         actor.send({ type: "MESSAGE", text: "qual a capital do Brasil?" });
         await waitForReady(actor);
 
         snapshot = actor.getSnapshot();
-        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
+        expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
+            { role: "assistant", content: "Ola! Sou Atlas." },
             { role: "user", content: "qual a capital do Brasil?" },
-            { role: "assistant", content: "Brasília." },
+            { role: "assistant", content: "Brasilia." },
         ]);
 
         actor.stop();
     });
 
-    it("handles greeting with follow-up in the same message (PARTIALLY_RESPONDED)", async () => {
+    it("handles greeting with follow-up routed to socratic", async () => {
         const actor = createTestActor({
-            greetingsResult: {
-                greeting: "Olá! Sou Atlas.",
-                needsFollowUp: true,
-            },
-            improviseResults: [
-                [{ role: "assistant", content: "Brasília." }],
+            classifyResults: [
+                { intent: "greetings" },
+                { intent: "socratic" },
+                // After socratic done:
+                { intent: "none" },
+            ],
+            greetingsResults: [
+                [{ role: "assistant", content: "Ola! Sou Atlas." }],
+            ],
+            socraticTeachingResults: [
+                [{ role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" }],
+            ],
+            socraticEvaluatingResults: [
+                { evaluation: "achieved", messages: [{ role: "assistant", content: "Correto! Voce entendeu closures." }] },
             ],
         });
 
-        actor.send({
-            type: "MESSAGE",
-            text: "oi, qual a capital do Brasil?",
-        });
-        await waitForReady(actor);
-
-        const snapshot = actor.getSnapshot();
-        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
-        expect(snapshot.context.messages).toEqual([
-            { role: "user", content: "oi, qual a capital do Brasil?" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
-            { role: "assistant", content: "Brasília." },
-        ]);
-
-        actor.stop();
-    });
-
-    it("handles greeting with follow-up then additional question", async () => {
-        const actor = createTestActor({
-            greetingsResult: {
-                greeting: "Olá! Sou Atlas.",
-                needsFollowUp: true,
-            },
-            improviseResults: [
-                [{ role: "assistant", content: "Brasília." }],
-                [{ role: "assistant", content: "Cerca de 200 milhões." }],
-            ],
-        });
-
-        actor.send({
-            type: "MESSAGE",
-            text: "oi, qual a capital do Brasil?",
-        });
+        // "oi, me explica closures" → greetings → classifier detects socratic → socratic teaches
+        actor.send({ type: "MESSAGE", text: "oi, me explica closures" });
+        // Wait for socratic.listening (where MESSAGE is accepted)
         await waitForReady(actor);
 
         let snapshot = actor.getSnapshot();
-        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
+        expect(snapshot.matches({ socratic: "listening" })).toBe(true);
         expect(snapshot.context.messages).toEqual([
-            { role: "user", content: "oi, qual a capital do Brasil?" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
-            { role: "assistant", content: "Brasília." },
+            { role: "user", content: "oi, me explica closures" },
+            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" },
         ]);
 
-        actor.send({ type: "MESSAGE", text: "e a população?" });
+        // User answers correctly → evaluating (achieved) → done → classifying (none) → listening
+        actor.send({ type: "MESSAGE", text: "a variavel x continua acessivel pela funcao interna" });
         await waitForReady(actor);
 
         snapshot = actor.getSnapshot();
-        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
+        expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
-            { role: "user", content: "oi, qual a capital do Brasil?" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
-            { role: "assistant", content: "Brasília." },
-            { role: "user", content: "e a população?" },
-            { role: "assistant", content: "Cerca de 200 milhões." },
+            { role: "user", content: "oi, me explica closures" },
+            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" },
+            { role: "user", content: "a variavel x continua acessivel pela funcao interna" },
+            { role: "assistant", content: "Correto! Voce entendeu closures." },
         ]);
 
         actor.stop();
     });
 
-    it("handles single tool call in improvise", async () => {
+    it("handles socratic pass (direct, no greeting)", async () => {
         const actor = createTestActor({
-            greetingsResult: {
-                greeting: "Olá! Sou Atlas.",
-                needsFollowUp: false,
-            },
-            improviseResults: [
+            classifyResults: [
+                { intent: "socratic" },
+                { intent: "none" },
+            ],
+            socraticTeachingResults: [
+                [{ role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" }],
+            ],
+            socraticEvaluatingResults: [
+                { evaluation: "achieved", messages: [{ role: "assistant", content: "Correto!" }] },
+            ],
+        });
+
+        actor.send({ type: "MESSAGE", text: "me explica closures" });
+        await waitForReady(actor);
+
+        let snapshot = actor.getSnapshot();
+        expect(snapshot.matches({ socratic: "listening" })).toBe(true);
+
+        actor.send({ type: "MESSAGE", text: "resposta correta" });
+        await waitForReady(actor);
+
+        snapshot = actor.getSnapshot();
+        expect(snapshot.matches("listening")).toBe(true);
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "me explica closures" },
+            { role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" },
+            { role: "user", content: "resposta correta" },
+            { role: "assistant", content: "Correto!" },
+        ]);
+
+        actor.stop();
+    });
+
+    it("handles socratic retry then pass", async () => {
+        const actor = createTestActor({
+            classifyResults: [
+                { intent: "socratic" },
+                { intent: "none" },
+            ],
+            socraticTeachingResults: [
+                [{ role: "assistant", content: "Explicacao inicial. Pergunta?" }],
+                [{ role: "assistant", content: "Explicacao revisada. Tente novamente?" }],
+            ],
+            socraticEvaluatingResults: [
+                { evaluation: "retry", messages: [{ role: "assistant", content: "Nao esta certo. Vamos tentar de novo." }] },
+                { evaluation: "achieved", messages: [{ role: "assistant", content: "Agora sim!" }] },
+            ],
+        });
+
+        actor.send({ type: "MESSAGE", text: "me explica closures" });
+        await waitForReady(actor);
+
+        // First attempt — wrong answer
+        actor.send({ type: "MESSAGE", text: "nao sei" });
+        // retry → teaching again → listening
+        await waitForReady(actor);
+
+        let snapshot = actor.getSnapshot();
+        expect(snapshot.matches({ socratic: "listening" })).toBe(true);
+
+        // Second attempt — correct answer
+        actor.send({ type: "MESSAGE", text: "agora eu sei" });
+        await waitForReady(actor);
+
+        snapshot = actor.getSnapshot();
+        expect(snapshot.matches("listening")).toBe(true);
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "me explica closures" },
+            { role: "assistant", content: "Explicacao inicial. Pergunta?" },
+            { role: "user", content: "nao sei" },
+            { role: "assistant", content: "Nao esta certo. Vamos tentar de novo." },
+            { role: "assistant", content: "Explicacao revisada. Tente novamente?" },
+            { role: "user", content: "agora eu sei" },
+            { role: "assistant", content: "Agora sim!" },
+        ]);
+
+        actor.stop();
+    });
+
+    it("handles socratic abandonment", async () => {
+        const actor = createTestActor({
+            classifyResults: [
+                { intent: "socratic" },
+                // After abandoned, classifier routes the new intent
+                { intent: "improvise" },
+                { intent: "none" },
+            ],
+            socraticTeachingResults: [
+                [{ role: "assistant", content: "Explicacao. Pergunta?" }],
+            ],
+            socraticEvaluatingResults: [
+                { evaluation: "abandoned", messages: [{ role: "assistant", content: "Tudo bem, vamos mudar de assunto." }] },
+            ],
+            improvisingResults: [
+                [{ role: "assistant", content: "Sao 10:30." }],
+            ],
+        });
+
+        actor.send({ type: "MESSAGE", text: "me explica closures" });
+        await waitForReady(actor);
+
+        // User abandons and asks a different question
+        actor.send({ type: "MESSAGE", text: "para, me diz que horas sao" });
+        // abandoned → done → classifying → improvise → improvising → done → classifying (none) → listening
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.matches("listening")).toBe(true);
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "me explica closures" },
+            { role: "assistant", content: "Explicacao. Pergunta?" },
+            { role: "user", content: "para, me diz que horas sao" },
+            { role: "assistant", content: "Tudo bem, vamos mudar de assunto." },
+            { role: "assistant", content: "Sao 10:30." },
+        ]);
+
+        actor.stop();
+    });
+
+    it("handles improvising with tool messages", async () => {
+        const actor = createTestActor({
+            classifyResults: [
+                { intent: "improvise" },
+                { intent: "none" },
+            ],
+            improvisingResults: [
                 [
                     { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
                     { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
-                    { role: "assistant", content: "São 10:30 da manhã!" },
+                    { role: "assistant", content: "Sao 10:30 da manha!" },
                 ],
+            ],
+        });
+
+        actor.send({ type: "MESSAGE", text: "que horas sao?" });
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.matches("listening")).toBe(true);
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "que horas sao?" },
+            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
+            { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
+            { role: "assistant", content: "Sao 10:30 da manha!" },
+        ]);
+
+        actor.stop();
+    });
+
+    it("handles multiple turns — greeting then improvise then improvise", async () => {
+        const actor = createTestActor({
+            classifyResults: [
+                { intent: "greetings" },
+                { intent: "none" },
+                { intent: "improvise" },
+                { intent: "none" },
+                { intent: "improvise" },
+                { intent: "none" },
+            ],
+            greetingsResults: [
+                [{ role: "assistant", content: "Ola! Sou Atlas." }],
+            ],
+            improvisingResults: [
+                [{ role: "assistant", content: "Brasilia." }],
+                [{ role: "assistant", content: "Cerca de 200 milhoes." }],
             ],
         });
 
         actor.send({ type: "MESSAGE", text: "oi" });
         await waitForReady(actor);
 
-        actor.send({ type: "MESSAGE", text: "que horas são?" });
+        actor.send({ type: "MESSAGE", text: "capital do Brasil?" });
+        await waitForReady(actor);
+
+        actor.send({ type: "MESSAGE", text: "e a populacao?" });
         await waitForReady(actor);
 
         const snapshot = actor.getSnapshot();
-        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
+        expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
-            { role: "user", content: "que horas são?" },
-            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
-            { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
-            { role: "assistant", content: "São 10:30 da manhã!" },
-        ]);
-
-        actor.stop();
-    });
-
-    it("handles multi-step tool calls in improvise", async () => {
-        const actor = createTestActor({
-            greetingsResult: {
-                greeting: "Olá! Sou Atlas.",
-                needsFollowUp: false,
-            },
-            improviseResults: [
-                [
-                    { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
-                    { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
-                    { role: "assistant", content: null, tool_calls: [{ id: "call_2", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
-                    { role: "tool", content: "2026-05-14T10:30:01Z", tool_call_id: "call_2" },
-                    { role: "assistant", content: "Confirmei duas vezes: são 10:30." },
-                ],
-            ],
-        });
-
-        actor.send({ type: "MESSAGE", text: "oi" });
-        await waitForReady(actor);
-
-        actor.send({ type: "MESSAGE", text: "que horas são? confira duas vezes" });
-        await waitForReady(actor);
-
-        const snapshot = actor.getSnapshot();
-        expect(snapshot.matches({ improvise: "listening" })).toBe(true);
-        expect(snapshot.context.messages).toEqual([
-            { role: "user", content: "oi" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
-            { role: "user", content: "que horas são? confira duas vezes" },
-            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
-            { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
-            { role: "assistant", content: null, tool_calls: [{ id: "call_2", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
-            { role: "tool", content: "2026-05-14T10:30:01Z", tool_call_id: "call_2" },
-            { role: "assistant", content: "Confirmei duas vezes: são 10:30." },
-        ]);
-
-        actor.stop();
-    });
-
-    it("preserves tool messages in context across user turns", async () => {
-        const actor = createTestActor({
-            greetingsResult: {
-                greeting: "Olá! Sou Atlas.",
-                needsFollowUp: false,
-            },
-            improviseResults: [
-                [
-                    { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
-                    { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
-                    { role: "assistant", content: "São 10:30 da manhã!" },
-                ],
-                [
-                    { role: "assistant", content: "Em Tóquio são 00:30 do dia seguinte." },
-                ],
-            ],
-        });
-
-        actor.send({ type: "MESSAGE", text: "oi" });
-        await waitForReady(actor);
-
-        actor.send({ type: "MESSAGE", text: "que horas são?" });
-        await waitForReady(actor);
-
-        actor.send({ type: "MESSAGE", text: "e em Tóquio?" });
-        await waitForReady(actor);
-
-        const snapshot = actor.getSnapshot();
-        expect(snapshot.context.messages).toEqual([
-            { role: "user", content: "oi" },
-            { role: "assistant", content: "Olá! Sou Atlas." },
-            { role: "user", content: "que horas são?" },
-            { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_current_time", arguments: "{}" } }] },
-            { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
-            { role: "assistant", content: "São 10:30 da manhã!" },
-            { role: "user", content: "e em Tóquio?" },
-            { role: "assistant", content: "Em Tóquio são 00:30 do dia seguinte." },
+            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "user", content: "capital do Brasil?" },
+            { role: "assistant", content: "Brasilia." },
+            { role: "user", content: "e a populacao?" },
+            { role: "assistant", content: "Cerca de 200 milhoes." },
         ]);
 
         actor.stop();
