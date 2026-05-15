@@ -36,9 +36,9 @@ socratic (compound):
 │
 ├── evaluating
 │   invoke: socraticEvaluatingNode
-│   onDone [outcome=achieved]  → done (assign payload.messages)
-│   onDone [outcome=abandoned] → done (assign payload.messages)
-│   onDone [outcome=retry]     → teaching (assign payload.messages)
+│   onDone [outcome=achieved]  → done
+│   onDone [outcome=abandoned] → done
+│   onDone [outcome=retry]     → teaching
 │
 └── done (final)
 
@@ -93,16 +93,21 @@ Any state that accepts `MESSAGE` is named `listening` — both at root level and
 
 ### Socratic retry loop
 
+`evaluating` owns the *decision*; `teaching` owns the *speech*. The retry path is purely a routing signal — no message is appended to `context.messages` by `evaluating`.
+
 When the user fails the counter-proof:
-1. `evaluating` returns `{ outcome: "retry", payload: { messages } }`, assigns feedback messages, transitions to `teaching`.
-2. `teaching` sees the full conversation (original question, explanation, counter-proof question, user's answer, evaluation feedback) and teaches from a different angle.
-3. The loop repeats until evaluation returns `achieved` or `abandoned`.
+1. `evaluating` returns `{ outcome: "retry" }`. It does not modify `context.messages` and does not print anything.
+2. The machine transitions to `teaching`. The conversation history still ends in the user's incorrect or incomplete answer, preserving the alternating user/assistant turn order the LLM API requires.
+3. `teaching` re-explains the concept from a different angle and issues a new counter-proof. Its system prompt instructs the LLM to detect a previous failed attempt in the conversation history and adjust accordingly.
+4. The loop repeats until evaluation returns `achieved` or `abandoned`.
 
 No flags or counters — the conversation history drives the LLM's behavior.
 
 ### Socratic abandonment
 
-The `socraticEvaluatingNode` actor detects abandonment in the same LLM call that evaluates the user's answer. The system prompt instructs: "evaluate whether the user answered correctly, answered incorrectly, or is requesting to stop/leave." If abandoned, the evaluation returns `{ outcome: "abandoned", payload: { messages } }` with a farewell message. The mode transitions to `done` (final), and the classifier handles whatever intent was in the abandonment message.
+The `socraticEvaluatingNode` actor detects abandonment in the same LLM call that evaluates the user's answer. The system prompt instructs: "evaluate whether the user answered correctly, answered incorrectly, or is requesting to stop/leave." If abandoned, the evaluation returns `{ outcome: "abandoned" }` — no message, no console output. The mode transitions to `done` (final), and the classifier examines the user's last message (which contains the abandonment, possibly with a new request) and routes accordingly.
+
+There is intentionally no explicit farewell turn from `evaluating`. If the user said "para, que horas são?", the classifier routes to `improvising`; if they just said "para", the classifier returns `none` and the agent waits silently. Emitting a farewell from `evaluating` would violate the analytical-only contract and would also create a double-`assistant` turn problem if any state ever ran after it.
 
 ### Mode exit via final state
 
@@ -124,6 +129,8 @@ type ModeOutput<T = unknown> = {
 - **`abandoned`**: the user explicitly requested to stop. Transition to `done` (final).
 
 `outcome` is the universal routing signal — guards on `onDone` inspect `event.output.outcome`. `payload` carries mode-specific data (messages, intent, etc.). Every actor returns this type, including simple modes where `outcome` is always `"achieved"`.
+
+`payload` may be `undefined` (i.e., `ModeOutput<undefined>`) when the actor's role is purely analytical — its return drives routing only and contributes no user-facing content. `socraticEvaluatingNode` is the canonical example.
 
 ## Classifier Detail
 
@@ -167,7 +174,7 @@ Ordered guard array — first match wins:
 #### `socratic.teaching` (initial)
 
 - **Actor:** `socraticTeachingNode`.
-- **System prompt:** Instructs the LLM to explain the topic clearly, then end with a counter-proof verification question to test understanding.
+- **System prompt:** Instructs the LLM to explain the topic clearly, then end with a counter-proof verification question to test understanding. If the conversation history shows the user previously gave an incorrect or incomplete answer to a counter-proof, re-explain from a different angle and ask a new counter-proof.
 - **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome always `"achieved"`).
 - **`onDone`:** Assign `payload.messages` to context, transition to `socratic.listening`.
 - **State file:** `src/states/socratic.teaching.state.ts`.
@@ -180,13 +187,13 @@ Ordered guard array — first match wins:
 
 #### `socratic.evaluating`
 
-- **Actor:** `socraticEvaluatingNode`.
-- **System prompt:** Instructs the LLM to evaluate the user's answer. Determines one of three outcomes: the user demonstrated understanding (`achieved`), the user's answer is incorrect or incomplete (`retry`), or the user is requesting to stop (`abandoned`). Returns JSON `{ "evaluation": "achieved" | "retry" | "abandoned", "feedback": "..." }`.
-- **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome varies: `"achieved"`, `"retry"`, or `"abandoned"`).
+- **Actor:** `socraticEvaluatingNode`. **Purely analytical** — produces a routing decision only. Emits no user-facing message, does not modify `context.messages`, does not print to console.
+- **System prompt:** Instructs the LLM to evaluate the user's answer. Determines one of three outcomes: the user demonstrated understanding (`achieved`), the user's answer is incorrect or incomplete (`retry`), or the user is requesting to stop (`abandoned`). Returns JSON `{ "evaluation": "achieved" | "retry" | "abandoned" }`. No `feedback` field — feedback and re-teaching are the responsibility of `socratic.teaching` on the next iteration.
+- **Returns:** `ModeOutput<undefined>` (outcome varies: `"achieved"`, `"retry"`, or `"abandoned"`; `payload` is always `undefined`).
 - **`onDone` guards:**
-  - `event.output.outcome === "achieved"` → assign `payload.messages`, transition to `done`.
-  - `event.output.outcome === "abandoned"` → assign `payload.messages`, transition to `done`.
-  - Default (`retry`) → assign `payload.messages`, transition to `teaching`.
+  - `event.output.outcome === "achieved"` → transition to `done`. No assign.
+  - `event.output.outcome === "abandoned"` → transition to `done`. No assign.
+  - Default (`retry`) → transition to `teaching`. No assign.
 - **State file:** `src/states/socratic.evaluating.state.ts`.
 
 #### `socratic.done` (final)
@@ -247,9 +254,10 @@ No changes to context type:
 2. First message routes to greetings: user sends "oi" → classifier detects first message → greetings mode → greeting printed → classifier → LLM returns `none` → listening.
 3. Greeting with follow-up: user sends "oi, me explica recursão" → greetings → classifier → LLM returns `socratic` → socratic.
 4. Learning question routes to socratic: user sends "me explica closures" → classifier → socratic → teaches + asks counter-proof → user answers correctly → done → classifier → LLM returns `none` → listening.
-5. Socratic retry: user answers incorrectly → evaluator returns `retry` → teaching retries → user answers correctly → done.
-6. Socratic abandonment: user sends "para com isso, me diz que horas são" during counter-proof → evaluator returns `abandoned` → done → classifier → LLM returns `improvise` → improvising answers the question.
+5. Socratic retry: user answers incorrectly → evaluator returns `retry` (silently, no message printed) → teaching re-explains from a different angle and issues a new counter-proof → user answers correctly → done.
+6. Socratic abandonment: user sends "para com isso, me diz que horas são" during counter-proof → evaluator returns `abandoned` (silently, no farewell printed) → done → classifier → LLM returns `improvise` → improvising answers the question.
 7. General question routes to improvising: user sends "que horas são" → classifier → improvising → tool call → response → done → classifier → LLM returns `none` → listening.
+8. Socratic retry preserves alternating turns: after `evaluating` returns `retry`, the conversation history still ends with a `user` message — no `assistant`-only turn is injected — so `teaching`'s `chat()` call does not fail with `OpenRouter returned neither content nor tool_calls`.
 
 ## Out of Scope
 
