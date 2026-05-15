@@ -137,31 +137,13 @@ export const agentMachine = setup({
                             {
                                 guard: ({ event }) => event.output.outcome === "achieved",
                                 target: "done",
-                                actions: assign({
-                                    messages: ({ context, event }) => [
-                                        ...context.messages,
-                                        ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
-                                    ],
-                                }),
                             },
                             {
                                 guard: ({ event }) => event.output.outcome === "abandoned",
                                 target: "done",
-                                actions: assign({
-                                    messages: ({ context, event }) => [
-                                        ...context.messages,
-                                        ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
-                                    ],
-                                }),
                             },
                             {
                                 target: "teaching",
-                                actions: assign({
-                                    messages: ({ context, event }) => [
-                                        ...context.messages,
-                                        ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
-                                    ],
-                                }),
                             },
                         ],
                     },
