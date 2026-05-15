@@ -3,40 +3,62 @@ title: State Machine — Atlas Agent
 ---
 %% Spec: behavioral-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-14
-%% Fonte: src/machine.ts
+%% Atualizado: 2026-05-15
+%% Fonte: src/machine.ts, src/states/*.mode.ts
 %% Componente C4: machine (c2-container.mmd)
 %% Container C4: system (c2-container.mmd)
-%% Externos que disparam transicoes: OpenRouter API (via invoke in greetings, thinking)
+%% Externos que disparam transicoes: OpenRouter API (via invoke nos modos *Mode)
 stateDiagram-v2
-    [*] --> idle
+    [*] --> listening
 
-    idle --> greetings: MESSAGE / appendUserMessage
+    listening --> classifying: MESSAGE / appendUserMessage
 
-    greetings --> improvise: onDone / append greeting, raise PARTIALLY_RESPONDED if needsFollowUp
+    classifying --> greetings: onDone [intent=greetings]
+    classifying --> socratic: onDone [intent=socratic]
+    classifying --> listening: onDone [intent=none]
+    classifying --> improvising: onDone [default]
 
-    state improvise {
-        [*] --> listening
-
-        listening --> thinking: PARTIALLY_RESPONDED
-        listening --> thinking: MESSAGE / appendUserMessage
-        thinking --> listening: onDone / print reply, append assistant message
-        thinking --> listening: onError / print error
+    state greetings {
+        [*] --> gThinking
+        gThinking --> gDone: onDone / assign messages
+        gDone --> [*]
     }
+    greetings --> classifying: parent.onDone
 
-    note right of greetings
-        Invokes greetingsNode actor (OpenRouter API).
-        Returns { greeting, needsFollowUp }.
-        Raises PARTIALLY_RESPONDED only if needsFollowUp.
+    state socratic {
+        [*] --> sTeaching
+        sTeaching --> sListening: onDone / assign messages, print
+        sListening --> sEvaluating: MESSAGE / appendUserMessage
+        sEvaluating --> sDone: onDone [outcome=achieved]
+        sEvaluating --> sDone: onDone [outcome=abandoned]
+        sEvaluating --> sTeaching: onDone [retry]
+        sDone --> [*]
+    }
+    socratic --> classifying: parent.onDone
+
+    state improvising {
+        [*] --> iThinking
+        iThinking --> iDone: onDone / assign messages, print
+        iThinking --> iDone: onError / print error
+        iDone --> [*]
+    }
+    improvising --> classifying: parent.onDone
+
+    note right of classifying
+        Invokes classifyingMode.
+        First-message short-circuit: one user msg + no assistant -> intent=greetings (no LLM call).
+        Otherwise LLM returns one of greetings | socratic | improvise | none.
+        Does NOT modify messages.
     end note
 
-    note right of thinking
-        Invokes improviseThinkingNode actor (OpenRouter API)
-        with IMPROVISE_SYSTEM_PROMPT.
-        Does not accept MESSAGE while processing.
+    note right of sEvaluating
+        Invokes socraticEvaluatingMode (purely analytical).
+        Returns ModeOutput<undefined> with outcome in {achieved, retry, abandoned}.
+        Does NOT modify messages, does NOT print.
+        Re-teaching on retry is the responsibility of sTeaching.
     end note
 
-    note right of idle
-        No terminal state.
-        Agent runs until process exit (Ctrl+C).
+    note right of sTeaching
+        Invokes socraticTeachingMode.
+        On retry: detects prior failed attempt in history and re-explains from a different angle.
     end note
