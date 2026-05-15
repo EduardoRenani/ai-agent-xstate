@@ -12,15 +12,15 @@ listening (initial, accepts MESSAGE)
 
 classifying
   invoke: classifyingNode
-  onDone [intent=greetings]  → greetings
-  onDone [intent=socratic]   → socratic
-  onDone [intent=none]       → listening
-  onDone [default]           → improvising
+  onDone [payload.intent=greetings]  → greetings
+  onDone [payload.intent=socratic]   → socratic
+  onDone [payload.intent=none]       → listening
+  onDone [default]                   → improvising
 
 greetings (compound):
 ├── thinking (initial)
 │   invoke: greetingsThinkingNode
-│   onDone → done (assign messages, print)
+│   onDone → done (assign payload.messages)
 │
 └── done (final)
 
@@ -29,16 +29,16 @@ greetings (compound):
 socratic (compound):
 ├── teaching (initial)
 │   invoke: socraticTeachingNode
-│   onDone → listening (assign messages, print)
+│   onDone → listening (assign payload.messages)
 │
 ├── listening
 │   on MESSAGE → evaluating (with appendUserMessage)
 │
 ├── evaluating
 │   invoke: socraticEvaluatingNode
-│   onDone [achieved]  → done (assign messages, print)
-│   onDone [abandoned] → done (assign messages, print)
-│   onDone [retry]     → teaching (assign messages, print)
+│   onDone [outcome=achieved]  → done (assign payload.messages)
+│   onDone [outcome=abandoned] → done (assign payload.messages)
+│   onDone [outcome=retry]     → teaching (assign payload.messages)
 │
 └── done (final)
 
@@ -47,7 +47,7 @@ socratic (compound):
 improvising (compound):
 ├── thinking (initial)
 │   invoke: improvisingThinkingNode
-│   onDone → done (assign messages, print)
+│   onDone → done (assign payload.messages)
 │   onError → done (print error)
 │
 └── done (final)
@@ -67,7 +67,7 @@ Every message flows through `classifying`. The classifier examines the full conv
 
 After any mode completes (via its final state), control returns to `classifying`, not to `listening`. This means every mode exit triggers a classification step. The classifier determines the next step: whether there is pending content to address (e.g., a question embedded in a greeting), a new intent to route, or nothing left to do.
 
-When the classifier determines there is nothing left to address, it returns `{ intent: "none" }`. The guard routes back to `listening` without entering any mode.
+When the classifier determines there is nothing left to address, it returns `{ outcome: "achieved", payload: { intent: "none" } }`. The guard routes back to `listening` without entering any mode.
 
 **First message detection:** The classifier checks `context.messages` internally. If only one user message and no assistant messages → returns `{ intent: "greetings" }` without calling the LLM. This is the only deterministic short-circuit.
 
@@ -85,7 +85,7 @@ The previous architecture used `PARTIALLY_RESPONDED` as a raised event to signal
 
 `greetings` is a compound state like any other mode, with `thinking` → `done`. The classifier routes to it on first message. After greeting, the mode exits and the classifier handles any follow-up content.
 
-The `greetingsThinkingNode` actor no longer returns `needsFollowUp` — that responsibility moves to the classifier. The actor returns `Message[]` (the greeting as an assistant message), same contract as other mode actors.
+The `greetingsThinkingNode` actor no longer returns `needsFollowUp` — that responsibility moves to the classifier. The actor returns `ModeOutput<{ messages: Message[] }>` with outcome `"achieved"`, same contract as other mode actors.
 
 ### Modes have internal `listening` states
 
@@ -94,7 +94,7 @@ Any state that accepts `MESSAGE` is named `listening` — both at root level and
 ### Socratic retry loop
 
 When the user fails the counter-proof:
-1. `evaluating` returns `{ evaluation: "retry" }`, assigns feedback messages, transitions to `teaching`.
+1. `evaluating` returns `{ outcome: "retry", payload: { messages } }`, assigns feedback messages, transitions to `teaching`.
 2. `teaching` sees the full conversation (original question, explanation, counter-proof question, user's answer, evaluation feedback) and teaches from a different angle.
 3. The loop repeats until evaluation returns `achieved` or `abandoned`.
 
@@ -102,27 +102,28 @@ No flags or counters — the conversation history drives the LLM's behavior.
 
 ### Socratic abandonment
 
-The `socraticEvaluatingNode` actor detects abandonment in the same LLM call that evaluates the user's answer. The system prompt instructs: "evaluate whether the user answered correctly, answered incorrectly, or is requesting to stop/leave." If abandoned, the evaluation returns `{ evaluation: "abandoned" }` with a farewell message. The mode transitions to `done` (final), and the classifier handles whatever intent was in the abandonment message.
+The `socraticEvaluatingNode` actor detects abandonment in the same LLM call that evaluates the user's answer. The system prompt instructs: "evaluate whether the user answered correctly, answered incorrectly, or is requesting to stop/leave." If abandoned, the evaluation returns `{ outcome: "abandoned", payload: { messages } }` with a farewell message. The mode transitions to `done` (final), and the classifier handles whatever intent was in the abandonment message.
 
 ### Mode exit via final state
 
 Every mode exits through a `done` state of type `final`. The parent handles `onDone` uniformly — transition to `classifying`. No cross-boundary targeting (DD-001). No need for the parent to inspect the mode's output.
 
-## ModeGoalEvaluation — Formal Interface
+## ModeOutput — Universal Actor Return Type
 
-Every mode that evaluates user input must use the `ModeGoalEvaluation` type for its internal routing:
+Every actor returns `ModeOutput<T>`, where `T` is the mode-specific payload:
 
 ```ts
-type ModeGoalEvaluation = "achieved" | "retry" | "abandoned";
+type ModeOutput<T = unknown> = {
+    outcome: "achieved" | "retry" | "abandoned";
+    payload: T;
+};
 ```
 
-- **`achieved`**: the mode's goal has been met. Transition to `done` (final).
+- **`achieved`**: the mode's goal has been met. Transition to `done` (final) or the next routing step.
 - **`retry`**: the goal is not met, but the mode should try again. Transition to an internal state to continue.
 - **`abandoned`**: the user explicitly requested to stop. Transition to `done` (final).
 
-This type is used by evaluation actors and guards within modes. It is not part of the mode's external contract — the parent references it only for guard type safety within the mode's compound state definition. The parent does not inspect mode output on `onDone`.
-
-Modes without multi-turn evaluation (greetings, improvising) do not use `ModeGoalEvaluation`. Their submachine is linear: invoke → done. The interface applies only to modes with an internal evaluation loop.
+`outcome` is the universal routing signal — guards on `onDone` inspect `event.output.outcome`. `payload` carries mode-specific data (messages, intent, etc.). Every actor returns this type, including simple modes where `outcome` is always `"achieved"`.
 
 ## Classifier Detail
 
@@ -136,16 +137,16 @@ Two internal paths, checked in order:
    - `"improvise"` — general question, task, conversation, or anything else.
    - `"none"` — there is no unaddressed user content; the conversation is idle.
 
-- Returns: `{ intent: "greetings" | "socratic" | "improvise" | "none" }`.
+- Returns: `ModeOutput<{ intent: "greetings" | "socratic" | "improvise" | "none" }>`. Outcome is always `"achieved"`.
 - Does **not** append anything to `context.messages`.
 - State file: `src/states/classifying.state.ts`.
 
 ### Guards on `onDone`
 
 Ordered guard array — first match wins:
-1. `event.output.intent === "greetings"` → `greetings`
-2. `event.output.intent === "socratic"` → `socratic`
-3. `event.output.intent === "none"` → `listening`
+1. `event.output.payload.intent === "greetings"` → `greetings`
+2. `event.output.payload.intent === "socratic"` → `socratic`
+3. `event.output.payload.intent === "none"` → `listening`
 4. No guard (default) → `improvising`
 
 ## Mode Details
@@ -155,8 +156,8 @@ Ordered guard array — first match wins:
 - **Goal:** Greet the user and introduce Atlas.
 - **Actor:** `greetingsThinkingNode` (renamed from `greetingsNode`).
 - **System prompt:** Instructs Atlas to greet in Portuguese, introduce itself briefly. Returns a text response (no JSON — the `needsFollowUp` classification is now the classifier's job).
-- **Returns:** `Message[]` (the greeting as an assistant message).
-- **`thinking.onDone`:** Print the greeting, assign messages to context, transition to `done`.
+- **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome always `"achieved"`).
+- **`thinking.onDone`:** Assign `payload.messages` to context, transition to `done`.
 - **State file:** `src/states/greetings.thinking.state.ts` (renamed from `greetings.state.ts` per DD-009 — now references the inner state path `greetings.thinking`).
 
 ### `socratic`
@@ -167,8 +168,8 @@ Ordered guard array — first match wins:
 
 - **Actor:** `socraticTeachingNode`.
 - **System prompt:** Instructs the LLM to explain the topic clearly, then end with a counter-proof verification question to test understanding.
-- **Returns:** `Message[]` (the explanation + question as assistant messages).
-- **`onDone`:** Print the last message, assign messages to context, transition to `socratic.listening`.
+- **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome always `"achieved"`).
+- **`onDone`:** Assign `payload.messages` to context, transition to `socratic.listening`.
 - **State file:** `src/states/socratic.teaching.state.ts`.
 
 #### `socratic.listening`
@@ -181,11 +182,11 @@ Ordered guard array — first match wins:
 
 - **Actor:** `socraticEvaluatingNode`.
 - **System prompt:** Instructs the LLM to evaluate the user's answer. Determines one of three outcomes: the user demonstrated understanding (`achieved`), the user's answer is incorrect or incomplete (`retry`), or the user is requesting to stop (`abandoned`). Returns JSON `{ "evaluation": "achieved" | "retry" | "abandoned", "feedback": "..." }`.
-- **Returns:** `{ evaluation: ModeGoalEvaluation; messages: Message[] }` (messages = the feedback as assistant message).
+- **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome varies: `"achieved"`, `"retry"`, or `"abandoned"`).
 - **`onDone` guards:**
-  - `evaluation === "achieved"` → assign messages, print feedback, transition to `done`.
-  - `evaluation === "abandoned"` → assign messages, print feedback, transition to `done`.
-  - Default (`retry`) → assign messages, print feedback, transition to `teaching`.
+  - `event.output.outcome === "achieved"` → assign `payload.messages`, transition to `done`.
+  - `event.output.outcome === "abandoned"` → assign `payload.messages`, transition to `done`.
+  - Default (`retry`) → assign `payload.messages`, transition to `teaching`.
 - **State file:** `src/states/socratic.evaluating.state.ts`.
 
 #### `socratic.done` (final)
@@ -197,8 +198,8 @@ Ordered guard array — first match wins:
 - **Goal:** Answer the user's question or perform a task.
 - **Actor:** `improvisingThinkingNode` (renamed from `improviseThinkingNode`).
 - **Same behavior as current `improvise.thinking`** — calls `chat()` with general-purpose system prompt and tools. The tool loop is internal to the actor (spec 002).
-- **Returns:** `Message[]`.
-- **`thinking.onDone`:** Print the last message, assign messages to context, transition to `done`.
+- **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome always `"achieved"`).
+- **`thinking.onDone`:** Assign `payload.messages` to context, transition to `done`.
 - **`thinking.onError`:** Print error, transition to `done`.
 - **State file:** `src/states/improvising.thinking.state.ts` (renamed from `improvise.thinking.state.ts` per DD-008).
 
@@ -226,8 +227,8 @@ No changes to context type:
 |---|---|
 | `docs/specs/003-agent-modes.md` | New spec (this document) |
 | `docs/specs/README.md` | Add 003 to index |
-| `src/types.ts` | New — exports `ModeGoalEvaluation` type |
-| `src/machine.ts` | Restructure: remove `idle`, `improvise`. Add `listening`, `classifying`, `greetings`, `socratic`, `improvising` as top-level states. Remove `PARTIALLY_RESPONDED` from events. Register new actors and guards. |
+| `src/types.ts` | New — exports `ModeOutput` type |
+| `src/machine.ts` | Restructure: remove `idle`, `improvise`. Add `listening`, `classifying`, `greetings`, `socratic`, `improvising` as top-level states. Remove `PARTIALLY_RESPONDED` from events. Register new actors. All actors return `ModeOutput<T>`. |
 | `src/states/classifying.state.ts` | New — classifier actor |
 | `src/states/greetings.thinking.state.ts` | Renamed from `greetings.state.ts`. Actor returns `Message[]` instead of `{ greeting, needsFollowUp }`. |
 | `src/states/socratic.teaching.state.ts` | New — socratic teaching actor |

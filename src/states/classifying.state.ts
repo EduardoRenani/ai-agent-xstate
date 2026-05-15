@@ -1,8 +1,9 @@
 import { fromPromise } from "xstate";
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";
+import type { ModeOutput } from "../types.js";
 
-type ClassificationResult = {
+type ClassificationPayload = {
     intent: "greetings" | "socratic" | "improvise" | "none";
 };
 
@@ -40,12 +41,12 @@ function formatForClassification(messages: Message[]): Message[] {
 }
 
 export const classifyingNode = fromPromise(
-    async ({ input }: { input: { messages: Message[] } }): Promise<ClassificationResult> => {
+    async ({ input }: { input: { messages: Message[] } }): Promise<ModeOutput<ClassificationPayload>> => {
         // First message detection: exactly one user message and no assistant messages.
         const userMessages = input.messages.filter((m) => m.role === "user");
         const assistantMessages = input.messages.filter((m) => m.role === "assistant");
         if (userMessages.length === 1 && assistantMessages.length === 0) {
-            return { intent: "greetings" };
+            return { outcome: "achieved", payload: { intent: "greetings" } };
         }
 
         // Classification via LLM. The conversation is formatted as data in a
@@ -61,13 +62,13 @@ export const classifyingNode = fromPromise(
             const parsed = JSON.parse(lastMessage.content) as { intent: string };
             const intent = parsed.intent;
             if (intent === "socratic" || intent === "improvise" || intent === "none") {
-                return { intent };
+                return { outcome: "achieved", payload: { intent } };
             }
             // Unknown intent — default to improvise.
-            return { intent: "improvise" };
+            return { outcome: "achieved", payload: { intent: "improvise" } };
         } catch {
             // Failed to parse — default to improvise.
-            return { intent: "improvise" };
+            return { outcome: "achieved", payload: { intent: "improvise" } };
         }
     }
 );

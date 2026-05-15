@@ -1,7 +1,7 @@
 import { fromPromise } from "xstate";
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";
-import type { ModeGoalEvaluation } from "../types.js";
+import type { ModeOutput } from "../types.js";
 
 const SYSTEM_PROMPT = [
     "Voce e Atlas, um assistente educacional avaliando a resposta do usuario.",
@@ -19,7 +19,7 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 export const socraticEvaluatingNode = fromPromise(
-    async ({ input }: { input: { messages: Message[] } }): Promise<{ evaluation: ModeGoalEvaluation; messages: Message[] }> => {
+    async ({ input }: { input: { messages: Message[] } }): Promise<ModeOutput<{ messages: Message[] }>> => {
         const result = await chat(input.messages, SYSTEM_PROMPT);
         const lastMessage = result[result.length - 1];
         if (!lastMessage || lastMessage.role !== "assistant" || lastMessage.content === null) {
@@ -35,8 +35,8 @@ export const socraticEvaluatingNode = fromPromise(
                     console.log(`\n${feedback}\n`);
                 }
                 return {
-                    evaluation,
-                    messages: [{ role: "assistant" as const, content: feedback }],
+                    outcome: evaluation,
+                    payload: { messages: [{ role: "assistant" as const, content: feedback }] },
                 };
             }
             // Unknown evaluation — default to retry.
@@ -45,15 +45,15 @@ export const socraticEvaluatingNode = fromPromise(
                 console.log(`\n${fallbackFeedback}\n`);
             }
             return {
-                evaluation: "retry",
-                messages: [{ role: "assistant" as const, content: fallbackFeedback }],
+                outcome: "retry",
+                payload: { messages: [{ role: "assistant" as const, content: fallbackFeedback }] },
             };
         } catch {
             // Failed to parse — default to retry with raw content as feedback.
             console.log(`\n${lastMessage.content}\n`);
             return {
-                evaluation: "retry",
-                messages: [{ role: "assistant" as const, content: lastMessage.content }],
+                outcome: "retry",
+                payload: { messages: [{ role: "assistant" as const, content: lastMessage.content }] },
             };
         }
     }

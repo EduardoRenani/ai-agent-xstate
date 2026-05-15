@@ -7,19 +7,19 @@ vi.mock("../src/llm-client.js", () => ({ chat: vi.fn() }));
 
 import { agentMachine } from "../src/machine.js";
 import type { Message } from "../src/llm-client.js";
-import type { ModeGoalEvaluation } from "../src/types.js";
+import type { ModeOutput } from "../src/types.js";
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-type ClassifyResult = { intent: "greetings" | "socratic" | "improvise" | "none" };
-type EvalResult = { evaluation: ModeGoalEvaluation; messages: Message[] };
+type ClassifyResult = ModeOutput<{ intent: "greetings" | "socratic" | "improvise" | "none" }>;
+type MessagesResult = ModeOutput<{ messages: Message[] }>;
 
 function createTestActor(options: {
     classifyResults: ClassifyResult[];
-    greetingsResults?: Message[][];
-    socraticTeachingResults?: Message[][];
-    socraticEvaluatingResults?: EvalResult[];
-    improvisingResults?: Message[][];
+    greetingsResults?: MessagesResult[];
+    socraticTeachingResults?: MessagesResult[];
+    socraticEvaluatingResults?: MessagesResult[];
+    improvisingResults?: MessagesResult[];
 }) {
     let classifyIndex = 0;
     let greetingsIndex = 0;
@@ -36,25 +36,25 @@ function createTestActor(options: {
                 classifyIndex++;
                 return result;
             }),
-            greetingsThinkingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
+            greetingsThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.greetingsResults ?? [];
                 const result = results[greetingsIndex] ?? results[results.length - 1];
                 greetingsIndex++;
                 return result;
             }),
-            socraticTeachingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
+            socraticTeachingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.socraticTeachingResults ?? [];
                 const result = results[socraticTeachingIndex] ?? results[results.length - 1];
                 socraticTeachingIndex++;
                 return result;
             }),
-            socraticEvaluatingNode: fromPromise<EvalResult, { messages: Message[] }>(async () => {
+            socraticEvaluatingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.socraticEvaluatingResults ?? [];
                 const result = results[socraticEvaluatingIndex] ?? results[results.length - 1];
                 socraticEvaluatingIndex++;
                 return result;
             }),
-            improvisingThinkingNode: fromPromise<Message[], { messages: Message[] }>(async () => {
+            improvisingThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.improvisingResults ?? [];
                 const result = results[improvisingIndex] ?? results[results.length - 1];
                 improvisingIndex++;
@@ -96,16 +96,16 @@ describe("agentMachine", () => {
     it("handles simple greeting then question", async () => {
         const actor = createTestActor({
             classifyResults: [
-                { intent: "greetings" },
-                { intent: "none" },
-                { intent: "improvise" },
-                { intent: "none" },
+                { outcome: "achieved", payload: { intent: "greetings" } },
+                { outcome: "achieved", payload: { intent: "none" } },
+                { outcome: "achieved", payload: { intent: "improvise" } },
+                { outcome: "achieved", payload: { intent: "none" } },
             ],
             greetingsResults: [
-                [{ role: "assistant", content: "Ola! Sou Atlas." }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Atlas." }] } },
             ],
             improvisingResults: [
-                [{ role: "assistant", content: "Brasilia." }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Brasilia." }] } },
             ],
         });
 
@@ -139,19 +139,19 @@ describe("agentMachine", () => {
     it("handles greeting with follow-up routed to socratic", async () => {
         const actor = createTestActor({
             classifyResults: [
-                { intent: "greetings" },
-                { intent: "socratic" },
+                { outcome: "achieved", payload: { intent: "greetings" } },
+                { outcome: "achieved", payload: { intent: "socratic" } },
                 // After socratic done:
-                { intent: "none" },
+                { outcome: "achieved", payload: { intent: "none" } },
             ],
             greetingsResults: [
-                [{ role: "assistant", content: "Ola! Sou Atlas." }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Atlas." }] } },
             ],
             socraticTeachingResults: [
-                [{ role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" }] } },
             ],
             socraticEvaluatingResults: [
-                { evaluation: "achieved", messages: [{ role: "assistant", content: "Correto! Voce entendeu closures." }] },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Correto! Voce entendeu closures." }] } },
             ],
         });
 
@@ -188,14 +188,14 @@ describe("agentMachine", () => {
     it("handles socratic pass (direct, no greeting)", async () => {
         const actor = createTestActor({
             classifyResults: [
-                { intent: "socratic" },
-                { intent: "none" },
+                { outcome: "achieved", payload: { intent: "socratic" } },
+                { outcome: "achieved", payload: { intent: "none" } },
             ],
             socraticTeachingResults: [
-                [{ role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" }] } },
             ],
             socraticEvaluatingResults: [
-                { evaluation: "achieved", messages: [{ role: "assistant", content: "Correto!" }] },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Correto!" }] } },
             ],
         });
 
@@ -223,16 +223,16 @@ describe("agentMachine", () => {
     it("handles socratic retry then pass", async () => {
         const actor = createTestActor({
             classifyResults: [
-                { intent: "socratic" },
-                { intent: "none" },
+                { outcome: "achieved", payload: { intent: "socratic" } },
+                { outcome: "achieved", payload: { intent: "none" } },
             ],
             socraticTeachingResults: [
-                [{ role: "assistant", content: "Explicacao inicial. Pergunta?" }],
-                [{ role: "assistant", content: "Explicacao revisada. Tente novamente?" }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao inicial. Pergunta?" }] } },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao revisada. Tente novamente?" }] } },
             ],
             socraticEvaluatingResults: [
-                { evaluation: "retry", messages: [{ role: "assistant", content: "Nao esta certo. Vamos tentar de novo." }] },
-                { evaluation: "achieved", messages: [{ role: "assistant", content: "Agora sim!" }] },
+                { outcome: "retry", payload: { messages: [{ role: "assistant", content: "Nao esta certo. Vamos tentar de novo." }] } },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Agora sim!" }] } },
             ],
         });
 
@@ -269,19 +269,19 @@ describe("agentMachine", () => {
     it("handles socratic abandonment", async () => {
         const actor = createTestActor({
             classifyResults: [
-                { intent: "socratic" },
+                { outcome: "achieved", payload: { intent: "socratic" } },
                 // After abandoned, classifier routes the new intent
-                { intent: "improvise" },
-                { intent: "none" },
+                { outcome: "achieved", payload: { intent: "improvise" } },
+                { outcome: "achieved", payload: { intent: "none" } },
             ],
             socraticTeachingResults: [
-                [{ role: "assistant", content: "Explicacao. Pergunta?" }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao. Pergunta?" }] } },
             ],
             socraticEvaluatingResults: [
-                { evaluation: "abandoned", messages: [{ role: "assistant", content: "Tudo bem, vamos mudar de assunto." }] },
+                { outcome: "abandoned", payload: { messages: [{ role: "assistant", content: "Tudo bem, vamos mudar de assunto." }] } },
             ],
             improvisingResults: [
-                [{ role: "assistant", content: "Sao 10:30." }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Sao 10:30." }] } },
             ],
         });
 
@@ -309,15 +309,15 @@ describe("agentMachine", () => {
     it("handles improvising with tool messages", async () => {
         const actor = createTestActor({
             classifyResults: [
-                { intent: "improvise" },
-                { intent: "none" },
+                { outcome: "achieved", payload: { intent: "improvise" } },
+                { outcome: "achieved", payload: { intent: "none" } },
             ],
             improvisingResults: [
-                [
+                { outcome: "achieved", payload: { messages: [
                     { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } }] },
                     { role: "tool", content: "2026-05-14T10:30:00Z", tool_call_id: "call_1" },
                     { role: "assistant", content: "Sao 10:30 da manha!" },
-                ],
+                ] } },
             ],
         });
 
@@ -339,19 +339,19 @@ describe("agentMachine", () => {
     it("handles multiple turns — greeting then improvise then improvise", async () => {
         const actor = createTestActor({
             classifyResults: [
-                { intent: "greetings" },
-                { intent: "none" },
-                { intent: "improvise" },
-                { intent: "none" },
-                { intent: "improvise" },
-                { intent: "none" },
+                { outcome: "achieved", payload: { intent: "greetings" } },
+                { outcome: "achieved", payload: { intent: "none" } },
+                { outcome: "achieved", payload: { intent: "improvise" } },
+                { outcome: "achieved", payload: { intent: "none" } },
+                { outcome: "achieved", payload: { intent: "improvise" } },
+                { outcome: "achieved", payload: { intent: "none" } },
             ],
             greetingsResults: [
-                [{ role: "assistant", content: "Ola! Sou Atlas." }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Atlas." }] } },
             ],
             improvisingResults: [
-                [{ role: "assistant", content: "Brasilia." }],
-                [{ role: "assistant", content: "Cerca de 200 milhoes." }],
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Brasilia." }] } },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Cerca de 200 milhoes." }] } },
             ],
         });
 

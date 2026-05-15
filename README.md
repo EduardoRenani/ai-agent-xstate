@@ -88,7 +88,7 @@ When an actor completes, its output determines one of three outcomes:
 2. **Abandoned** — the goal was not achieved, but a quit criterion was met (user asked to stop, retry limit reached). The machine exits the mode without achieving the goal.
 3. **Retry** — the goal was not achieved and no quit criterion was met. The machine stays in the mode and tries again.
 
-This is formalized through `ModeGoalEvaluation` (`"achieved" | "retry" | "abandoned"`) — the actor's output is inspected by inline guards on `onDone`, and the first matching guard determines the transition. The LLM's judgment becomes a typed value that the machine routes on declaratively.
+This is formalized through `ModeOutput<T>` — every actor returns `{ outcome, payload }` where `outcome` is `"achieved" | "retry" | "abandoned"` and `payload` carries mode-specific data. Guards on `onDone` inspect `event.output.outcome`, and the first match determines the transition. The LLM's judgment becomes a typed value that the machine routes on declaratively.
 
 Not every mode uses all three exits. One-shot modes like `greetings` and `improvising` always achieve their goal on first execution (single `onDone` → `done`). Multi-turn modes like `socratic` use the full three-exit pattern in their evaluating sub-state.
 

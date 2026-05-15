@@ -1,6 +1,6 @@
 import { setup, assign, createActor } from "xstate";
 import type { Message } from "./llm-client.js";
-import type { ModeGoalEvaluation } from "./types.js";
+import type { ModeOutput } from "./types.js";
 import { classifyingNode } from "./states/classifying.state.js";
 import { greetingsThinkingNode } from "./states/greetings.thinking.state.js";
 import { socraticTeachingNode } from "./states/socratic.teaching.state.js";
@@ -54,17 +54,17 @@ export const agentMachine = setup({
                 input: ({ context }) => ({
                     messages: context.messages,
                 }),
-                onDone: [ // no fim do bloco de execucao
-                    {   // roda a funcao de transicao com o output do bloco de execucao
-                        guard: ({ event }) => event.output.intent === "greetings",
+                onDone: [
+                    {
+                        guard: ({ event }) => event.output.payload.intent === "greetings",
                         target: "greetings",
                     },
                     {
-                        guard: ({ event }) => event.output.intent === "socratic",
+                        guard: ({ event }) => event.output.payload.intent === "socratic",
                         target: "socratic",
                     },
                     {
-                        guard: ({ event }) => event.output.intent === "none",
+                        guard: ({ event }) => event.output.payload.intent === "none",
                         target: "listening",
                     },
                     {
@@ -88,7 +88,7 @@ export const agentMachine = setup({
                             actions: assign({
                                 messages: ({ context, event }) => [
                                     ...context.messages,
-                                    ...(event.output as Message[]),
+                                    ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
                                 ],
                             }),
                         },
@@ -113,7 +113,7 @@ export const agentMachine = setup({
                             actions: assign({
                                 messages: ({ context, event }) => [
                                     ...context.messages,
-                                    ...(event.output as Message[]),
+                                    ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
                                 ],
                             }),
                         },
@@ -135,22 +135,22 @@ export const agentMachine = setup({
                         }),
                         onDone: [
                             {
-                                guard: ({ event }) => event.output.evaluation === "achieved",
+                                guard: ({ event }) => event.output.outcome === "achieved",
                                 target: "done",
                                 actions: assign({
                                     messages: ({ context, event }) => [
                                         ...context.messages,
-                                        ...(event.output as { evaluation: ModeGoalEvaluation; messages: Message[] }).messages,
+                                        ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
                                     ],
                                 }),
                             },
                             {
-                                guard: ({ event }) => event.output.evaluation === "abandoned",
+                                guard: ({ event }) => event.output.outcome === "abandoned",
                                 target: "done",
                                 actions: assign({
                                     messages: ({ context, event }) => [
                                         ...context.messages,
-                                        ...(event.output as { evaluation: ModeGoalEvaluation; messages: Message[] }).messages,
+                                        ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
                                     ],
                                 }),
                             },
@@ -159,7 +159,7 @@ export const agentMachine = setup({
                                 actions: assign({
                                     messages: ({ context, event }) => [
                                         ...context.messages,
-                                        ...(event.output as { evaluation: ModeGoalEvaluation; messages: Message[] }).messages,
+                                        ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
                                     ],
                                 }),
                             },
@@ -185,7 +185,7 @@ export const agentMachine = setup({
                             actions: assign({
                                 messages: ({ context, event }) => [
                                     ...context.messages,
-                                    ...(event.output as Message[]),
+                                    ...(event.output as ModeOutput<{ messages: Message[] }>).payload.messages,
                                 ],
                             }),
                         },
