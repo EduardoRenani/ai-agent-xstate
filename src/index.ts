@@ -1,9 +1,8 @@
 import "dotenv/config";
 import * as readline from "node:readline/promises";
-import { createActor } from "xstate";
-import { agentMachine } from "./machine.js";
+import { createAgentActor } from "./machine.js";
 
-const actor = createActor(agentMachine);
+const actor = createAgentActor();
 actor.start();
 
 const rl = readline.createInterface({

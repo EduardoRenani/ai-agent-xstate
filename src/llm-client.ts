@@ -70,6 +70,9 @@ export async function chat(
         }))
         : undefined;
 
+    const MAX_EMPTY_RETRIES = 1;
+    let emptyRetries = 0;
+
     while (true) {
         // Monta o array de mensagens para a API: system prompt + histórico.
         const apiMessages = [
@@ -92,6 +95,17 @@ export async function chat(
         const toolCalls = choice.message.tool_calls
             ? (choice.message.tool_calls as unknown as ToolCall[])
             : null;
+
+        // ── Caso 0: Resposta vazia (content=null, sem tool_calls) ───
+        // A spec da API não define este caso — é uma falha do provider.
+        // Retry uma vez antes de desistir.
+        if (!toolCalls && content === null) {
+            if (emptyRetries < MAX_EMPTY_RETRIES) {
+                emptyRetries++;
+                continue;
+            }
+            throw new Error("OpenRouter returned neither content nor tool_calls");
+        }
 
         // ── Caso 1: LLM pediu tool calls ─────────────────────────────
         // O LLM não respondeu ao usuário — ele quer dados de tools primeiro.
@@ -128,14 +142,9 @@ export async function chat(
 
         // ── Caso 2: LLM respondeu com texto ──────────────────────────
         // Fim do ciclo. Retorna todas as mensagens geradas.
-        if (content) {
-            const assistantMessage: Message = { role: "assistant", content };
-            newMessages.push(assistantMessage);
-            return newMessages;
-        }
-
-        // ── Caso 3: Nem texto nem tool calls ─────────────────────────
-        // Não deveria acontecer. Erro na API.
-        throw new Error("OpenRouter returned neither content nor tool_calls");
+        // Safe: caso 0 já tratou content===null sem tool_calls, caso 1 tratou tool_calls.
+        const assistantMessage: Message = { role: "assistant", content: content! };
+        newMessages.push(assistantMessage);
+        return newMessages;
     }
 }

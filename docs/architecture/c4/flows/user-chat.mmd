@@ -1,36 +1,61 @@
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-14
-%% Fonte: src/index.ts, src/machine.ts, src/openrouter.ts
+%% Atualizado: 2026-05-15
+%% Fonte: src/index.ts, src/machine.ts, src/llm-client.ts, src/states/*.mode.ts
 sequenceDiagram
     participant user as [ENTRY] User
     participant cli as [ENTRY] CLI Entry Point
     participant machine as [HARNESS] Agent State Machine
-    participant client as [CODE] OpenRouter Client
+    participant client as [CODE] LLM Client
     participant api as [EXT] OpenRouter API
 
     user->>cli: types first message
     cli->>machine: send MESSAGE event
-    Note over machine: idle -> greetings (appendUserMessage)
-    machine->>client: invoke greetingsNode(messages, GREETINGS_SYSTEM_PROMPT)
+    Note over machine: listening → classifying (appendUserMessage)
+    machine->>machine: invoke classifyingMode
+    Note over machine: first-message short-circuit: intent=greetings (no LLM call)
+    Note over machine: classifying → greetings.thinking
+    machine->>client: invoke greetingsThinkingMode(messages, GREETINGS_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
-    client-->>machine: { greeting, needsFollowUp } (event.output)
-    Note over machine: greetings -> improvise.listening (append greeting, raise PARTIALLY_RESPONDED if needsFollowUp)
-    Note over machine: listening -> thinking (PARTIALLY_RESPONDED)
-    machine->>client: invoke improviseThinkingNode(messages, IMPROVISE_SYSTEM_PROMPT)
+    client-->>machine: ModeOutput of messages (outcome=achieved)
+    Note over machine: greetings.thinking → greetings.done (assign, print) → classifying
+    machine->>client: invoke classifyingMode(messages, CLASSIFIER_PROMPT)
     client->>api: chat.completions.create
-    api-->>client: completion response
-    client-->>machine: assistant reply (event.output)
-    Note over machine: thinking -> listening (print reply, append to context)
+    api-->>client: ModeOutput of intent=none
+    Note over machine: classifying → listening (root)
 
-    loop conversation continues
-        user->>cli: types question
+    loop conversation continues (exit: process termination)
+        user->>cli: types message
         cli->>machine: send MESSAGE event
-        Note over machine: listening -> thinking (appendUserMessage)
-        machine->>client: invoke improviseThinkingNode(messages, IMPROVISE_SYSTEM_PROMPT)
+        Note over machine: listening → classifying (appendUserMessage)
+        machine->>client: invoke classifyingMode
         client->>api: chat.completions.create
-        api-->>client: completion response
-        client-->>machine: assistant reply
-        Note over machine: thinking -> listening
+        api-->>client: ModeOutput of intent
+
+        alt intent = socratic
+            Note over machine: classifying → socratic.teaching
+            machine->>client: invoke socraticTeachingMode
+            client->>api: chat.completions.create
+            api-->>client: ModeOutput of messages (achieved)
+            Note over machine: socratic.teaching → socratic.listening (assign, print)
+            user->>cli: types answer to counter-proof
+            cli->>machine: send MESSAGE event
+            Note over machine: socratic.listening → socratic.evaluating (appendUserMessage)
+            machine->>client: invoke socraticEvaluatingMode
+            client->>api: chat.completions.create
+            api-->>client: ModeOutput undefined (outcome=achieved | retry | abandoned)
+            Note over machine: retry returns to socratic.teaching (no assign, no print). The cycle repeats until achieved or abandoned.
+            Note over machine: socratic.evaluating → socratic.done → classifying
+
+        else intent = improvise
+            Note over machine: classifying → improvising.thinking
+            machine->>client: invoke improvisingThinkingMode (with tools)
+            client->>api: chat.completions.create (may iterate on tool_calls)
+            api-->>client: ModeOutput of messages (achieved)
+            Note over machine: improvising.thinking → improvising.done → classifying
+
+        else intent = none
+            Note over machine: classifying → listening (root, no mode invoked)
+        end
     end

@@ -7,15 +7,15 @@ config:
 ---
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-14
-%% Fonte: src/index.ts, src/machine.ts, src/openrouter.ts
+%% Atualizado: 2026-05-15
+%% Fonte: src/index.ts, src/machine.ts, src/llm-client.ts
 flowchart LR
     user[User]:::entry
 
     subgraph system [AI Agent]
         cli[CLI Entry Point]:::entry
         machine[Agent State Machine]:::harness
-        openrouterClient[OpenRouter Client]:::code
+        llmClient[LLM Client]:::code
     end
 
     subgraph externals [External Services]
@@ -31,8 +31,8 @@ flowchart LR
 
     user -->|1| cli
     cli -->|2| machine
-    machine -->|3| openrouterClient
-    openrouterClient -->|4| openrouter
+    machine -->|3| llmClient
+    llmClient -->|4| openrouter
 
     classDef entry fill:#ea580c,stroke:#9a3412,color:#fff
     classDef harness fill:#7c3aed,stroke:#5b21b6,color:#fff
@@ -42,5 +42,5 @@ flowchart LR
 %% | # | Origin -> Destination | Protocol | Payload |
 %% | 1 | user -> cli | CLI stdin | plain text message |
 %% | 2 | cli -> machine | in-process actor.send | { type: "MESSAGE", text } |
-%% | 3 | machine -> openrouterClient | in-process invoke | { messages: Array<{ role, content }>, systemPrompt: string } |
-%% | 4 | openrouterClient -> openrouter | HTTPS POST (sync) | chat.completions.create |
+%% | 3 | machine -> llmClient | in-process invoke | { messages: Array<{ role, content }>, systemPrompt: string, tools?: Record<string, Tool> } |
+%% | 4 | llmClient -> openrouter | HTTPS POST (sync) | chat.completions.create |

@@ -6,12 +6,12 @@
 
 **Rule:** Transitions must never target a child sub-state of another compound state. Always target the parent and let it route internally via its `initial` state.
 
-**Problem:** If `greetings` targets `#agent.improvise.thinking` directly, it knows `improvise`'s internal structure. Reorganizing `improvise`'s children silently breaks `greetings`.
+**Problem:** If `greetings` targets `#agent.improvising.thinking` directly, it knows `improvising`'s internal structure. Reorganizing `improvising`'s children silently breaks `greetings`.
 
-**Solution:** `greetings` transitions to `improvise` (parent) and raises `PARTIALLY_RESPONDED`. The event is queued and delivered after `improvise.listening` is entered. `listening` handles the event and transitions to `thinking`, which inspects context to continue processing. No state knows the internal structure of another.
+**Solution:** Every mode exits through a `done` state of type `final`. The parent compound state handles `onDone` uniformly — transition to `classifying`. No mode decides what comes next; the classifier handles all routing. No state knows the internal structure of another.
 
 **Rejected alternatives:**
-- **Absolute ID targeting** (`#agent.improvise.thinking`): couples the source to the target's internal structure.
+- **Absolute ID targeting** (`#agent.improvising.thinking`): couples the source to the target's internal structure.
 - **`always` guard in child state**: moves the coupling to the target — the child carries routing logic that only exists to serve the source. A state should not carry guards that compensate for another state's transition intent.
 - **Flag + guard**: a boolean in context (e.g. `unprocessedMessage`) checked by an `always` guard. This is an antipattern — it encodes control flow in data instead of using events and transitions. See decision 006.
 
@@ -36,7 +36,9 @@
 
 **Alternative — interruptible state:** When the agent should accept new input during processing (e.g. urgent/critical messages that override the current task), use a single state with `invoke` + `on.MESSAGE` as a self-transition. The new message cancels the in-flight invoke and restarts it. This is a deliberate design choice, not a default.
 
-**Decision for `improvise`:** Uses thinking/listening because conversational responses should not be interrupted by accidental keystrokes.
+**Decision for one-shot modes (`greetings`, `improvising`):** These modes use thinking → done (final) without an internal listening state. The root `listening` is a sibling state, not a parent — events do not reach the mode's invoke states. Protection against interruption is preserved by XState's sibling isolation: when the machine is in `improvising.thinking`, the root `listening` is inactive and `MESSAGE` events are not handled.
+
+**Decision for multi-turn modes (`socratic`):** Uses thinking/listening internally because the mode requires multiple exchanges with the user. The internal `listening` accepts `MESSAGE` and continues within the mode. The root `listening` remains inactive while inside the mode.
 
 ## 004 — setup() is for structural/generic actions, not agent behavior
 
@@ -66,9 +68,9 @@
 
 **Date:** 2026-05-14
 
-**Principle:** Events represent facts — something that happened. They are named in past tense or as factual observations (`MESSAGE`, `PARTIALLY_RESPONDED`), never as imperative commands (`CONTINUE`, `PROCESS`, `START`). The machine's behavior is determined by which events it accepts and how it reacts, not by being told what to do.
+**Principle:** Events represent facts — something that happened. They are named in past tense or as factual observations (`MESSAGE`), never as imperative commands (`CONTINUE`, `PROCESS`, `START`). The machine's behavior is determined by which events it accepts and how it reacts, not by being told what to do.
 
-**Naming test:** If an event name reads as an order to the machine ("do this"), it is wrong. It should read as a report ("this happened"). `PARTIALLY_RESPONDED` is a fact — the agent partially responded. `CONTINUE` is a command — it tells the machine what to do next.
+**Naming test:** If an event name reads as an order to the machine ("do this"), it is wrong. It should read as a report ("this happened"). `MESSAGE` is a fact — the user sent a message. `CONTINUE` is a command — it tells the machine what to do next.
 
 ## 007 — Flag + guard is an antipattern for control flow
 
@@ -78,9 +80,9 @@
 
 **Problem:** A flag (e.g. `unprocessedMessage: boolean`) set by one state and read by an `always` guard in another encodes control flow in data. The causal link between states is invisible in the state chart — it only appears by tracing context mutations. Debugging requires reading the code instead of reading the chart.
 
-**Correct alternative:** Use `raise()` to emit an event. The receiving state handles the event through a normal `on` transition. The causal link is explicit and visible in the state chart.
+**Correct alternative:** Use events and transitions. The causal link is explicit and visible in the state chart. With the current architecture, mode completion flows through `onDone` of the compound state to `classifying`, which routes based on the classifier's output — no flags needed.
 
-**Example:** `greetings` raises `PARTIALLY_RESPONDED` on completion. `improvise.listening` handles it by transitioning to `thinking`. No flag needed — the event is the signal, and context (messages) provides the data.
+**Example:** `greetings` completes and transitions to its `done` (final) sub-state. The parent's `onDone` routes to `classifying`, which determines the next mode. No flag needed — the state chart structure is the signal, and context (messages) provides the data.
 
 ## 008 — Actor names mirror their state path
 
@@ -112,8 +114,10 @@ The `Node` suffix disambiguates the actor (the async behavior) from the state it
 These three artifacts are inseparable — together they define *what the agent does* in a given state. That is why they live in the same file.
 
 **Examples:**
-- `greetings` → `src/states/greetings.state.ts`
-- `improvise.thinking` → `src/states/improvise.thinking.state.ts`
+- `classifying` → `src/states/classifying.state.ts`
+- `greetings.thinking` → `src/states/greetings.thinking.state.ts`
+- `socratic.teaching` → `src/states/socratic.teaching.state.ts`
+- `improvising.thinking` → `src/states/improvising.thinking.state.ts`
 
 **What a state file exports:** The actor (e.g. `greetingsNode`). System prompts and tools are private to the file — they are implementation details of the actor's behavior.
 
@@ -126,3 +130,40 @@ These three artifacts are inseparable — together they define *what the agent d
 - Imports of actors from state files and their registration in `setup().actors`
 
 **Supersedes:** Decision 005's clause "module-level constant in `machine.ts`" is superseded — prompts now live in the state file, not in `machine.ts`. The principle remains (prompts are per-state, not in context), only the location changes.
+
+## 010 — Invoke/onDone/guard is the transition routing pattern
+
+**Date:** 2026-05-15
+
+**Pattern:** A state's behavior is an invoked actor. The transition after completion is decided by an ordered guard array on `onDone`, where each guard inspects `event.output` — the actor's return value. First match wins; the last entry has no guard (default/fallback).
+
+**Structure:**
+```
+state → invoke actor → onDone: [
+    { guard: output === X → target A },
+    { guard: output === Y → target B },
+    { (no guard, default) → target C },
+]
+```
+
+**Why inline guards:** Guards on `onDone` are behavioral — they express "given this output, go there". Per decision 004, behavioral logic stays inline in the state, not in `setup()`. Registering guards in `setup()` would separate the routing decision from the transition it controls, making the machine harder to read as a flow.
+
+**Why guard on output, not separate events:** The actor produces a single `onDone` event with structured output. Splitting into multiple event types (e.g. `GREETINGS_CLASSIFIED`, `SOCRATIC_CLASSIFIED`) would couple the actor to the machine's state topology — the actor would need to know what states exist. With output + guards, the actor returns data and the machine decides.
+
+**Rejected alternatives:**
+- **Guards in `setup()`:** Adds indirection. Reading `type: "isGreetingsIntent"` forces you to look up the guard definition to understand a simple `=== "greetings"` check. Inline guards are self-documenting at the point of use.
+- **One event per outcome:** Couples the actor to the machine topology (see above).
+- **Flag + always guard:** Antipattern per decision 007.
+
+## 011 — Side effects belong in the actor, not in onDone
+
+**Date:** 2026-05-15
+
+**Rule:** Observable side effects of a state's behavior (e.g. printing the agent's response to the user) are performed inside the invoked actor, not in `onDone` actions.
+
+**What stays in `onDone`:** Plumbing (assign output to context) and routing (guard + target). Nothing else.
+
+**Rationale:** Per decision 002, a state is an agent mode and the invoked actor *is* the agent's behavior in that mode (decision 009). "Speaking to the user" is behavior — it is part of what the agent does, not a transition concern. Placing it in `onDone` separates the behavior from the actor that produces it.
+
+**Rejected alternative:**
+- **Side effects in onDone actions:** Mixes behavioral side effects with transition plumbing. The actor already has the data and the context to perform the effect — `onDone` should not carry behavior that belongs to the mode.
