@@ -167,3 +167,24 @@ state → invoke actor → onDone: [
 
 **Rejected alternative:**
 - **Side effects in onDone actions:** Mixes behavioral side effects with transition plumbing. The actor already has the data and the context to perform the effect — `onDone` should not carry behavior that belongs to the mode.
+
+## 012 — Agent modes are expressed through a typed wrapper, not raw XState
+
+**Date:** 2026-05-20
+
+**Rule:** Agent code expresses its modes through the `atlas` library (`defineLeafMode`, `defineMode`, `defineAgent`) — not through raw XState `setup()` / `createMachine()` / `fromPromise` / `assign` / `onDone` arrays. Importing from `xstate` inside agent source is a wrapper bug, not an escape hatch.
+
+**Rationale:** Decisions 008-011 codify a recurring shape: each state owns an invoked actor (DD-008), the actor and its prompt live together in a state file (DD-009), the transition after completion is decided by an ordered guard array on `onDone` (DD-010), and side effects are performed inside the actor (DD-011). Expressed in raw XState, that shape forces four separate hand-written pieces per mode — actor registration in `setup({ actors })`, the invoke block, the `onDone` guard array reading `event.output`, and the manual `assign` for context merging — held together by naming convention rather than by the type system. As the agent grows, the boilerplate scales linearly with the mode count and the `event.output` access stays untyped at every site.
+
+The wrapper takes the shape that DD-008-011 already mandate and makes it the only way to express a mode. `defineLeafMode` returns a single object holding `input`, `behavior`, and `routes` (a four-key map: `achieved` / `retry` / `abandoned` / `error`); the wrapper compiles this to the equivalent XState configuration. Actor names are derived from the state path (DD-008 becomes an invariant enforced by the compiler, not a convention enforced by review). The `routes` map closes over a typed `payload`, so `event.output` casts disappear at every call site. Side effects continue to live inside `behavior` (DD-011 unchanged).
+
+The output of `defineAgent` is a standard XState machine, so `createActor`, the inspector API, and existing tests keep working unchanged. The library is pure compile-time sugar — at runtime there is no extra layer.
+
+**Scope:** Spec 004 defines the contract; it migrates `classifying`, `greetings.thinking`, `improvising.thinking`, and the root `listening` to the wrapper, and defers the `socratic` compound to a follow-up on top of spec 003 (the existing sideways-jump retry does not map cleanly to the wrapper's self-loop retry). Until that follow-up lands, `socratic` stays in raw XState — but as deferred-migration code, not as a permitted pattern.
+
+**Supersedes:** Nothing. DD-008 through DD-011 stay in force; the wrapper is how they get expressed, not what they say. DD-009's file-naming convention is restated by the wrapper (`<state>.ts` under `examples/zoe/src/states/`); the `.mode.ts` suffix used by the current code is dropped only for migrated modes — deferred mode files keep their existing names until the follow-up spec.
+
+**Rejected alternatives:**
+- **Status quo (raw XState).** Forces the DD-008-011 shape to be hand-written and review-policed. Every new mode pays the same boilerplate; every `onDone` entry casts `event.output` to a payload type. The contract is real but invisible to the compiler.
+- **Replace XState entirely.** XState's runtime (inspector, actor model, hierarchical states) is not the problem — the *authoring surface* is. A custom runtime would re-create those concerns from scratch with no offsetting benefit.
+- **Lift only the actor naming (DD-008) into a helper, leave `routes` raw.** Captures one decision out of four. The `event.output` cast survives at every routing site; the contract between `behavior`'s return and the `onDone` guard array stays untyped. Partial solutions in this area have negative ROI — the value comes from closing all four loops at once.
