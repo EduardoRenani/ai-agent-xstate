@@ -180,9 +180,91 @@ The wrapper takes the shape that DD-008-011 already mandate and makes it the onl
 
 The output of `defineAgent` is a standard XState machine, so `createActor`, the inspector API, and existing tests keep working unchanged. The library is pure compile-time sugar — at runtime there is no extra layer.
 
-**Scope:** Spec 004 defines the contract; it migrates `classifying`, `greetings.thinking`, `improvising.thinking`, and the root `listening` to the wrapper, and defers the `socratic` compound to a follow-up on top of spec 003 (the existing sideways-jump retry does not map cleanly to the wrapper's self-loop retry). Until that follow-up lands, `socratic` stays in raw XState — but as deferred-migration code, not as a permitted pattern.
+**Scope:** Spec 004 defines the contract; the spec-004 implementation migrates every Zoe state to the wrapper — `classifying`, `greetings.thinking`, `improvising.thinking`, the root `listening`, and the `socratic` compound (`socratic.teaching`, `socratic.listening`, `socratic.evaluating`). The original concern — that `socratic.evaluating`'s sideways-jump retry to the `teaching` sibling did not map cleanly to the wrapper's structural retry-as-self-loop (DD-014) — was resolved by encoding the model's three results (`achieved` / `retry` / `abandoned`) in the leaf's payload and dispatching from `routes.achieved`. The wrapper-retry-is-a-self-loop constraint is honored; sibling-target branching lives in the payload.
 
-**Supersedes:** Nothing. DD-008 through DD-011 stay in force; the wrapper is how they get expressed, not what they say. DD-009's file-naming convention is restated by the wrapper (`<state>.ts` under `examples/zoe/src/states/`); the `.mode.ts` suffix used by the current code is dropped only for migrated modes — deferred mode files keep their existing names until the follow-up spec.
+**Supersedes:** Nothing. DD-008 through DD-011 stay in force; the wrapper is how they get expressed, not what they say. DD-009's file-naming convention is restated by the wrapper (`<state>.ts` under `examples/zoe/src/states/`); the `.mode.ts` suffix used by the pre-migration code has been dropped across the package.
+
+## 013 — `Outcome` is a closed four-slot record
+
+**Date:** 2026-05-20
+
+**Rule:** `Routes<TContext, TPayload>` is keyed by a closed `Outcome = "achieved" | "retry" | "abandoned"` plus the separate optional `error` slot — never freeform. Consumers cannot extend the set.
+
+**Rationale:** A closed key set makes every routes value statically inspectable as a four-key record, lets each slot carry different semantics (retry is structurally a self-loop per DD-014; `error` sees `error: unknown`, the others see `payload: TPayload`), and forces an exhaustive routing vocabulary. Behaviors that don't fit the three positive outcomes either encode the discrimination in the payload and dispatch from `routes.achieved` with a guarded array (`examples/zoe/src/states/socratic.evaluating.ts`) or split into multiple leaves.
+
+**Rejected alternatives:**
+- **Freeform `Record<string, RouteEntry>`:** Loses per-slot type narrowing (retry-no-target, error-sees-rejection). The same payload-encoded dispatch would still be available but with looser types.
+- **`Outcome` as a string-literal union the user can extend:** Leaks the abstraction — which outcomes are framework-owned vs. user-owned at the type level?
+
+## 014 — Retry is structurally a self-loop on the same leaf
+
+**Date:** 2026-05-20
+
+**Rule:** `RetryEntry` does NOT carry a `target` field — supplying one is a compile error. Every entry in `routes.retry` is a structural self-loop on the leaf that owns the routes.
+
+**Rationale:** "Retry" semantically means re-run the same behavior, not "branch by outcome name to a different state". Allowing retry to target a sibling would collapse retry's identity into something `achieved` or `abandoned` already does. When the actual control flow needs to branch on an evaluator's verdict to a sibling state, the leaf encodes the discriminator in its payload and dispatches from `routes.achieved`. The canonical worked example is `socratic.evaluating`: the model's three results (`achieved` / `retry` / `abandoned`) live in `{ result }`, and `routes.achieved` dispatches `result === "retry" → "teaching"` (sibling), the other two → `END`. The wrapper-retry constraint is preserved; sibling-target branching lives in the payload.
+
+**Rejected alternatives:**
+- **Allow `RetryEntry.target`:** Erases the semantic distinction between retry and the other slots. If retry can branch, the four slots collapse into "four ways to spell a guarded transition" and the type contract loses meaning.
+
+## 015 — `END` and `RE_THROW` are opaque branded symbols
+
+**Date:** 2026-05-20
+
+**Rule:** `END` (compound-final exit) and `RE_THROW` (re-raise the captured rejection) are exported by `atlas` as opaque branded symbols (`unique symbol` + `type END = typeof END`). Their types appear in `RouteTarget = string | END` and `ErrorRouteTarget = string | END | RE_THROW`. Users cannot construct an `END` or `RE_THROW` value without importing it.
+
+**Rationale:** Encoding `END` as a reserved string (`"END"`, `"$end"`, etc.) would collide with user-named states, require runtime validation to forbid the reserved name, and lose type-level discrimination — the compiler could not distinguish "an end exit" from "a target whose name happens to be `$end`". As opaque symbols, `END` and `RE_THROW` are identity-comparable in the compiler and mechanically excluded from slots they don't belong to (e.g. `RE_THROW` on non-error routes is a compile error because `RouteTarget` does not include it).
+
+**Rejected alternatives:**
+- **Reserved strings:** Still string-typed, still forgeable, still collidable.
+- **A literal type like `END = "@@atlas/end"`:** Better than freeform strings but still constructible by anyone who knows the magic string.
+
+## 016 — Target resolution is sibling-name only
+
+**Date:** 2026-05-20
+
+**Rule:** A `target` string must name a key in the **immediate** enclosing `states` map. Dotted paths, `#`-prefixed absolute IDs, and unknown-sibling targets are rejected by `validateTargets` at machine-creation time. The error message names the offending leaf path, the slot (`routes.<group>[i]`, `on.<EVENT>[i]`, or `onDone`), and the literal bad target.
+
+**Rationale:** Promotes DD-001 ("No cross-boundary sub-state targeting") from a code-review rule to a compiler invariant. The original problem — a target like `#agent.improvising.thinking` coupling the source to the target's internal structure — becomes unwritable. Compounds expose exactly one exit per slot (`onDone`); cross-compound flow goes through the parent. `END` (DD-015) and the structural retry self-loop (DD-014) cover the two non-sibling shapes that DO have legitimate uses; everything else stays sibling-only.
+
+**Rejected alternatives:**
+- **Allow absolute-ID targets for "escape hatches":** Every escape hatch grows usage. Forcing legitimate cross-compound flow through the parent's `onDone` is what makes DD-001 hold.
+- **Allow dotted paths for nested-child targeting within the same compound:** The same coupling problem at a smaller scale.
+
+## 017 — `END` is injected per-compound, only when referenced
+
+**Date:** 2026-05-20
+
+**Rule:** When a compound's subtree references `target: END` anywhere (leaf routes or nested-compound `onDone`), the compiler injects one final substate into that compound's `states` map under a collision-safe name (`$end`, `$end1`, ...) and rewrites every `END` target in that level to that key. Compounds whose subtrees never reference `END` get no injection — they stay "open", with no final substate emitted.
+
+**Rationale:** `END` is a relative exit — it means "leave the enclosing compound", which the compound's own `onDone` then routes from. Each compound that needs to exit on completion needs its own final substate to fire `onDone`. A single global `$end` at the root would short-circuit inner compounds to the root, defeating per-compound routing. Always injecting `$end` everywhere would pad every compound with unused final nodes that pollute the inspector and test snapshots. "Inject only when referenced" keeps the emitted machine the minimal equivalent of what the user wrote.
+
+**Rejected alternatives:**
+- **Single global `$end` at the root:** Doesn't compose for nested compounds.
+- **Always inject `$end` in every compound:** Pads the emitted machine with dead state nodes.
+
+## 018 — Compound-local context is a lifted root-context slot
+
+**Date:** 2026-05-20
+
+**Rule:** When a `defineMode` compound declares `context: { inherit, local }`, the compiler allocates a generated key on the agent's flat root context (`__<path>_local`, e.g. `__socratic_local`) holding the `local` shape, emits an `entry` action initializing it from the declared defaults, and emits an `exit` action clearing it. Children inside the compound see a typed view of `Pick<TParent, inherit> & local` in their `input` / `assign` / `when` / `guard` callbacks; the compiler rewrites their reads and writes to hit the lifted slot. Nested compounds chain via a `parent` lift, so an inner write to an outer compound's local key routes to the outer compound's slot, not the agent root.
+
+**Rationale:** XState v5 has a single flat context — there is no native per-state context. To honor the wrapper's type contract that gives every compound a logically scoped view, the compiler synthesizes the scope by lifting to a uniquely-named root-context slot. Reads and writes are rewritten at compile time; out-of-scope writes from a child (a write to a parent key that wasn't declared `inherit`) are silently dropped by `splitUserUpdate`, so they cannot reach the actual context. The type system already rejects the same writes at the call site; the runtime drop is belt-and-suspenders against `as Routes<...>` cast bypasses.
+
+**Rejected alternatives:**
+- **Store per-compound context as a state-tree property:** XState v5 does not support this; reimplementing it would require a parallel state machine, defeating the wrapper's "compile-time sugar" property (DD-012).
+- **Copy inherited keys into the lifted slot on entry and back on exit:** Doubles storage and bookkeeping; copy-back-on-exit conflicts with mid-state writes that need to be visible to siblings outside the compound. Rewriting reads and writes to their authoritative locations avoids the copy entirely.
+
+## 019 — `defineLeafMode` discriminates active vs. passive at the type level
+
+**Date:** 2026-05-20
+
+**Rule:** `LeafModeConfig` is a discriminated union of `ActiveLeafModeConfig` (`input` + `behavior` + `routes`, no `on`) and `PassiveLeafModeConfig` (`on`, no `behavior` / `routes` / `input`). Declaring both shapes on a single `defineLeafMode` call is a compile error.
+
+**Rationale:** A leaf that both invokes an actor and handles events at the same time is the confused state where DD-011 (side effects in the actor, not in transitions) and DD-002 (states are agent modes) drift apart — half the behavior is in `behavior`, half in `on` handlers, and the mode-as-a-unit becomes hard to read. If a state genuinely needs both (e.g. perform work, then accept user input), it should be modeled as a compound: an active leaf for the work, a passive sibling for the listening. The type-level rejection forces the modeling choice to be explicit instead of silently merged.
+
+**Rejected alternatives:**
+- **Allow both shapes on one leaf:** Re-creates the original `setup({ actors })` pattern where a state's behavior is partially in its invoke and partially in its event handlers — exactly the boilerplate the wrapper exists to eliminate.
 
 **Rejected alternatives:**
 - **Status quo (raw XState).** Forces the DD-008-011 shape to be hand-written and review-policed. Every new mode pays the same boilerplate; every `onDone` entry casts `event.output` to a payload type. The contract is real but invisible to the compiler.
