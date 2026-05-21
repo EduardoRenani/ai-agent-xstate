@@ -1,6 +1,27 @@
 # AI Agent XState
 
-Minimal AI agent (Atlas) built with XState v5 to evaluate the library as an orchestration layer for AI agents. CLI interface that converses in Portuguese via OpenRouter (Claude Sonnet). Each state carries its own system prompt — the agent greets, then processes the user's message. Conclusions are documented in the [Takeaways](#xstate-v5-interface--takeaways) section.
+Monorepo with two packages:
+
+- [`packages/atlas/`](packages/atlas/) — TypeScript library for mode-based agent orchestration.
+- [`examples/zoe/`](examples/zoe/) — example agent built on Atlas (CLI in Portuguese, OpenRouter / Claude Sonnet).
+
+## Atlas
+
+`atlas` is a TypeScript library for mode-based agent orchestration. It enforces a specific model:
+
+- A **mode** is a unit of agentic work with one well-defined **goal**.
+- A mode terminates with one of four **outcomes**: `achieved` / `retry` / `abandoned` / `error`.
+- **Exits are bound to outcomes** — routing happens over the outcome + its typed payload, not over arbitrary conditions.
+
+Three constructors (`defineLeafMode`, `defineMode`, `defineAgent`) are the only way to express the shape. The type system rejects anything that doesn't fit: active+passive mixing in the same leaf, modes missing outcomes, cross-compound targets, retry with arbitrary target.
+
+State machines (XState v5) live under the hood — atlas compiles to one to get the formal carrier (transitions, hierarchy, snapshot/replay) without exposing it as the API surface.
+
+Spec: [`docs/specs/004-xstate-agent-wrapper.md`](docs/specs/004-xstate-agent-wrapper.md).
+
+## Zoe (example agent)
+
+Zoe demonstrates Atlas. CLI agent that converses in Portuguese: classifies the user's intent on each turn and dispatches to a specialized mode — `greetings`, `improvising` (general Q&A with tool use), or `socratic` (multi-turn teaching with self-evaluation). Earlier observations from building Zoe on raw XState — before Atlas — are in the [Takeaways](#xstate-v5-interface--takeaways) section; they motivated the library.
 
 ## Setup
 
@@ -11,7 +32,9 @@ cp .env.example .env
 npm start
 ```
 
-## Architecture
+## Architecture (zoe)
+
+Diagrams describe Zoe — the example agent. Atlas itself is a library and has no runtime topology.
 
 ### System Context
 
@@ -26,8 +49,8 @@ config:
 ---
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-15
-%% Fonte: src/index.ts, src/machine.ts, src/llm-client.ts
+%% Atualizado: 2026-05-21
+%% Fonte: examples/zoe/src/index.ts, examples/zoe/src/machine.ts, examples/zoe/src/llm-client.ts
 flowchart LR
     user[User]:::entry
 
@@ -50,8 +73,8 @@ flowchart LR
 ```mermaid
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-15
-%% Fonte: src/index.ts, src/machine.ts, src/llm-client.ts, src/states/*.mode.ts
+%% Atualizado: 2026-05-21
+%% Fonte: examples/zoe/src/index.ts, examples/zoe/src/machine.ts, examples/zoe/src/llm-client.ts, examples/zoe/src/states/*.ts
 sequenceDiagram
     participant user as [ENTRY] User
     participant cli as [ENTRY] CLI Entry Point
@@ -116,6 +139,8 @@ sequenceDiagram
 
 ## Design Decisions
 
+These emerged while building Zoe on raw XState (M1). Atlas (M4) lifts them from convention into a type-enforced API — `ModeOutput<T>`, the four-outcome contract, and goal-bound exits are no longer authorial discipline but compile-time guarantees.
+
 Full list in [`docs/design-decisions.md`](docs/design-decisions.md). The most important ones:
 
 ### States are agent modes (DD-002)
@@ -144,7 +169,7 @@ Observable side effects — printing to stdout, logging, anything the user perce
 
 ## XState v5 Interface — Takeaways
 
-Observations from building this agent. Not a review of XState as a library — these are conclusions about its programming model for AI agent orchestration.
+Observations from M1 — building Zoe directly on XState, before Atlas existed. Not a review of XState as a library; these are conclusions about its programming model as a substrate for agent orchestration. The "what doesn't" section is exactly the gap Atlas closes.
 
 ### What works
 
