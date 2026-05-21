@@ -3,3 +3,10 @@ dist/
 .env
 .DS_Store
 .claude/
+
+# macOS / Dropbox / iCloud sync dupes — files like "machine 2.ts"
+* 2.ts
+* 2.tsx
+* 2.json
+* 2.md
+* 2.example

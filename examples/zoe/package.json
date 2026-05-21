@@ -1,0 +1,22 @@
+{
+    "name": "zoe",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "start": "tsx src/index.ts",
+        "test": "vitest run"
+    },
+    "dependencies": {
+        "atlas": "*",
+        "xstate": "^5",
+        "openai": "^4"
+    },
+    "devDependencies": {
+        "@types/node": "^22",
+        "dotenv": "^16",
+        "tsx": "^4",
+        "typescript": "^5",
+        "vitest": "^3"
+    }
+}

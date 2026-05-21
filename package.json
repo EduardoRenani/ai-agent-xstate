@@ -3,21 +3,15 @@
     "version": "0.1.0",
     "private": true,
     "type": "module",
+    "workspaces": [
+        "packages/*",
+        "examples/*"
+    ],
     "scripts": {
-        "start": "tsx src/index.ts",
-        "test": "vitest run",
+        "start": "npm --workspace zoe start",
+        "test": "npm --workspaces --if-present run test",
+        "test:types": "npm --workspaces --if-present run test:types",
         "sync:diagrams": "node scripts/sync-mermaid.mjs",
         "prepare": "git config core.hooksPath .githooks"
-    },
-    "dependencies": {
-        "xstate": "^5",
-        "openai": "^4"
-    },
-    "devDependencies": {
-        "typescript": "^5",
-        "@types/node": "^22",
-        "tsx": "^4",
-        "dotenv": "^16",
-        "vitest": "^3"
     }
 }

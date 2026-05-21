@@ -13,12 +13,13 @@ import type { ModeOutput } from "../src/types.js";
 
 type ClassifyResult = ModeOutput<{ intent: "greetings" | "socratic" | "improvise" | "none" }>;
 type MessagesResult = ModeOutput<{ messages: Message[] }>;
+type EvaluatingResult = ModeOutput<{ result: "achieved" | "retry" | "abandoned" }>;
 
 function createTestActor(options: {
     classifyResults: ClassifyResult[];
     greetingsResults?: MessagesResult[];
     socraticTeachingResults?: MessagesResult[];
-    socraticEvaluatingResults?: MessagesResult[];
+    socraticEvaluatingResults?: EvaluatingResult[];
     improvisingResults?: MessagesResult[];
 }) {
     let classifyIndex = 0;
@@ -27,34 +28,36 @@ function createTestActor(options: {
     let socraticEvaluatingIndex = 0;
     let improvisingIndex = 0;
 
+    // Actor names follow DD-008: `<camelCase(path)>Node`, produced by
+    // packages/atlas/src/actorName.ts. `listening` is passive (no actor).
     const testMachine = agentMachine.provide({
         actors: {
-            classifyingMode: fromPromise<ClassifyResult, { messages: Message[] }>(async () => {
+            classifyingNode: fromPromise<ClassifyResult, { messages: Message[] }>(async () => {
                 const result =
                     options.classifyResults[classifyIndex] ??
                     options.classifyResults[options.classifyResults.length - 1];
                 classifyIndex++;
                 return result;
             }),
-            greetingsThinkingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            greetingsThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.greetingsResults ?? [];
                 const result = results[greetingsIndex] ?? results[results.length - 1];
                 greetingsIndex++;
                 return result;
             }),
-            socraticTeachingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            socraticTeachingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.socraticTeachingResults ?? [];
                 const result = results[socraticTeachingIndex] ?? results[results.length - 1];
                 socraticTeachingIndex++;
                 return result;
             }),
-            socraticEvaluatingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            socraticEvaluatingNode: fromPromise<EvaluatingResult, { messages: Message[] }>(async () => {
                 const results = options.socraticEvaluatingResults ?? [];
                 const result = results[socraticEvaluatingIndex] ?? results[results.length - 1];
                 socraticEvaluatingIndex++;
                 return result;
             }),
-            improvisingThinkingMode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            improvisingThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.improvisingResults ?? [];
                 const result = results[improvisingIndex] ?? results[results.length - 1];
                 improvisingIndex++;
@@ -102,7 +105,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { intent: "none" } },
             ],
             greetingsResults: [
-                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Atlas." }] } },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Zoe." }] } },
             ],
             improvisingResults: [
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Brasilia." }] } },
@@ -117,7 +120,7 @@ describe("agentMachine", () => {
         expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi" },
-            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "assistant", content: "Ola! Sou Zoe." },
         ]);
 
         // Second message → classifying (improvise) → improvising → classifying (none) → listening
@@ -128,7 +131,7 @@ describe("agentMachine", () => {
         expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi" },
-            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "assistant", content: "Ola! Sou Zoe." },
             { role: "user", content: "qual a capital do Brasil?" },
             { role: "assistant", content: "Brasilia." },
         ]);
@@ -145,13 +148,13 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { intent: "none" } },
             ],
             greetingsResults: [
-                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Atlas." }] } },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Zoe." }] } },
             ],
             socraticTeachingResults: [
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Correto! Voce entendeu closures." }] } },
+                { outcome: "achieved", payload: { result: "achieved" } },
             ],
         });
 
@@ -164,11 +167,11 @@ describe("agentMachine", () => {
         expect(snapshot.matches({ socratic: "listening" })).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi, me explica closures" },
-            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "assistant", content: "Ola! Sou Zoe." },
             { role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" },
         ]);
 
-        // User answers correctly → evaluating (achieved) → done → classifying (none) → listening
+        // User answers correctly → evaluating (achieved, analytical-only) → done → classifying (none) → listening
         actor.send({ type: "MESSAGE", text: "a variavel x continua acessivel pela funcao interna" });
         await waitForReady(actor);
 
@@ -176,10 +179,9 @@ describe("agentMachine", () => {
         expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi, me explica closures" },
-            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "assistant", content: "Ola! Sou Zoe." },
             { role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" },
             { role: "user", content: "a variavel x continua acessivel pela funcao interna" },
-            { role: "assistant", content: "Correto! Voce entendeu closures." },
         ]);
 
         actor.stop();
@@ -195,7 +197,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Correto!" }] } },
+                { outcome: "achieved", payload: { result: "achieved" } },
             ],
         });
 
@@ -214,7 +216,6 @@ describe("agentMachine", () => {
             { role: "user", content: "me explica closures" },
             { role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" },
             { role: "user", content: "resposta correta" },
-            { role: "assistant", content: "Correto!" },
         ]);
 
         actor.stop();
@@ -231,8 +232,8 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao revisada. Tente novamente?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "retry", payload: { messages: [{ role: "assistant", content: "Nao esta certo. Vamos tentar de novo." }] } },
-                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Agora sim!" }] } },
+                { outcome: "achieved", payload: { result: "retry" } },
+                { outcome: "achieved", payload: { result: "achieved" } },
             ],
         });
 
@@ -257,10 +258,8 @@ describe("agentMachine", () => {
             { role: "user", content: "me explica closures" },
             { role: "assistant", content: "Explicacao inicial. Pergunta?" },
             { role: "user", content: "nao sei" },
-            { role: "assistant", content: "Nao esta certo. Vamos tentar de novo." },
             { role: "assistant", content: "Explicacao revisada. Tente novamente?" },
             { role: "user", content: "agora eu sei" },
-            { role: "assistant", content: "Agora sim!" },
         ]);
 
         actor.stop();
@@ -278,7 +277,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao. Pergunta?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "abandoned", payload: { messages: [{ role: "assistant", content: "Tudo bem, vamos mudar de assunto." }] } },
+                { outcome: "achieved", payload: { result: "abandoned" } },
             ],
             improvisingResults: [
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Sao 10:30." }] } },
@@ -299,7 +298,6 @@ describe("agentMachine", () => {
             { role: "user", content: "me explica closures" },
             { role: "assistant", content: "Explicacao. Pergunta?" },
             { role: "user", content: "para, me diz que horas sao" },
-            { role: "assistant", content: "Tudo bem, vamos mudar de assunto." },
             { role: "assistant", content: "Sao 10:30." },
         ]);
 
@@ -347,7 +345,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { intent: "none" } },
             ],
             greetingsResults: [
-                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Atlas." }] } },
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Ola! Sou Zoe." }] } },
             ],
             improvisingResults: [
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Brasilia." }] } },
@@ -368,7 +366,7 @@ describe("agentMachine", () => {
         expect(snapshot.matches("listening")).toBe(true);
         expect(snapshot.context.messages).toEqual([
             { role: "user", content: "oi" },
-            { role: "assistant", content: "Ola! Sou Atlas." },
+            { role: "assistant", content: "Ola! Sou Zoe." },
             { role: "user", content: "capital do Brasil?" },
             { role: "assistant", content: "Brasilia." },
             { role: "user", content: "e a populacao?" },

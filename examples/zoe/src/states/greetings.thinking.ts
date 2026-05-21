@@ -1,0 +1,41 @@
+import { defineLeafMode, END } from "atlas";
+import type { ModeOutput } from "atlas";
+
+import { chat } from "../llm-client.js";
+import type { Message } from "../llm-client.js";
+import type { AgentContext, AgentEvents } from "../types.js";
+
+const SYSTEM_PROMPT = [
+    "Voce e Zoe, um assistente de proposito geral.",
+    "Cumprimente o usuario em portugues do Brasil de forma amigavel e direta.",
+    "Apresente-se brevemente pelo nome.",
+    "Mantenha a saudacao curta (1-2 frases).",
+    "IMPORTANTE: Apenas cumprimente. Se o usuario fez uma pergunta ou pedido junto da saudacao, ignore completamente — nao responda, nao mencione, nao reconheca. Outro modulo cuidara disso.",
+].join(" ");
+
+export const greetingsThinking = defineLeafMode<
+    AgentContext,
+    AgentEvents,
+    { messages: Message[] }
+>({
+    input: ({ context }) => ({ messages: context.messages }),
+    behavior: async ({ input }): Promise<ModeOutput<{ messages: Message[] }>> => {
+        const { messages } = input as { messages: Message[] };
+        const replied = await chat(messages, SYSTEM_PROMPT);
+        const last = replied[replied.length - 1];
+        if (last && last.role === "assistant" && last.content !== null) {
+            console.log(`\n${last.content}\n`);
+        }
+        return { outcome: "achieved", payload: { messages: replied } };
+    },
+    routes: {
+        achieved: {
+            target: END,
+            assign: ({ context, payload }) => ({
+                messages: [...context.messages, ...payload.messages],
+            }),
+        },
+        retry: [],
+        abandoned: { target: END },
+    },
+});

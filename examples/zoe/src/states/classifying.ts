@@ -1,11 +1,12 @@
-import { fromPromise } from "xstate";
+import { defineLeafMode } from "atlas";
+import type { ModeOutput } from "atlas";
+
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";
-import type { ModeOutput } from "../types.js";
+import type { AgentContext, AgentEvents } from "../types.js";
 
-type ClassificationPayload = {
-    intent: "greetings" | "socratic" | "improvise" | "none";
-};
+type Intent = "greetings" | "socratic" | "improvise" | "none";
+type ClassifierPayload = { intent: Intent };
 
 const SYSTEM_PROMPT = [
     "You are a conversation classifier.",
@@ -21,10 +22,6 @@ const SYSTEM_PROMPT = [
     "No markdown, no code blocks, no extra text.",
 ].join("\n");
 
-// Classification is an analytical task, not a conversation. Format the
-// conversation history as data inside a single user message so the model
-// always has a clear prompt to respond to. Tool-related messages (tool_calls,
-// tool results) are stripped — the classifier only needs conversational content.
 function formatForClassification(messages: Message[]): Message[] {
     const lines = messages
         .filter((m): m is { role: "user"; content: string } | { role: "assistant"; content: string } =>
@@ -40,35 +37,49 @@ function formatForClassification(messages: Message[]): Message[] {
     ];
 }
 
-export const classifyingMode = fromPromise(
-    async ({ input }: { input: { messages: Message[] } }): Promise<ModeOutput<ClassificationPayload>> => {
-        // First message detection: exactly one user message and no assistant messages.
-        const userMessages = input.messages.filter((m) => m.role === "user");
-        const assistantMessages = input.messages.filter((m) => m.role === "assistant");
+export const classifying = defineLeafMode<AgentContext, AgentEvents, ClassifierPayload>({
+    input: ({ context }) => ({ messages: context.messages }),
+    behavior: async ({ input }): Promise<ModeOutput<ClassifierPayload>> => {
+        const { messages } = input as { messages: Message[] };
+
+        // First-message fast-path: a single user message and no assistant
+        // history maps deterministically to "greetings".
+        const userMessages = messages.filter((m) => m.role === "user");
+        const assistantMessages = messages.filter((m) => m.role === "assistant");
         if (userMessages.length === 1 && assistantMessages.length === 0) {
             return { outcome: "achieved", payload: { intent: "greetings" } };
         }
 
-        // Classification via LLM. The conversation is formatted as data in a
-        // single user message — classification is analytical, not conversational.
-        const classificationMessages = formatForClassification(input.messages);
+        const classificationMessages = formatForClassification(messages);
         const result = await chat(classificationMessages, SYSTEM_PROMPT);
-        const lastMessage = result[result.length - 1];
-        if (!lastMessage || lastMessage.role !== "assistant" || lastMessage.content === null) {
+        const last = result[result.length - 1];
+        if (!last || last.role !== "assistant" || last.content === null) {
             throw new Error("Classifying: unexpected response from chat()");
         }
 
         try {
-            const parsed = JSON.parse(lastMessage.content) as { intent: string };
+            const parsed = JSON.parse(last.content) as { intent: string };
             const intent = parsed.intent;
             if (intent === "socratic" || intent === "improvise" || intent === "none") {
                 return { outcome: "achieved", payload: { intent } };
             }
-            // Unknown intent — default to improvise.
             return { outcome: "achieved", payload: { intent: "improvise" } };
         } catch {
-            // Failed to parse — default to improvise.
             return { outcome: "achieved", payload: { intent: "improvise" } };
         }
-    }
-);
+    },
+    // Routing matches machine.ts:57-73 — first match wins on `payload.intent`,
+    // with `improvising` as the unguarded default.
+    routes: {
+        achieved: [
+            { when: (p) => p.intent === "greetings", target: "greetings" },
+            { when: (p) => p.intent === "socratic",  target: "socratic" },
+            { when: (p) => p.intent === "none",      target: "listening" },
+            { target: "improvising" },
+        ],
+        // The classifier never returns retry / abandoned in practice; the
+        // type system requires both keys. Safe fallbacks:
+        retry:     [],                       // no-op default
+        abandoned: { target: "listening" },  // back to idle on unexpected failure
+    },
+});
