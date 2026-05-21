@@ -61,7 +61,7 @@ export function createAgentActor() {
                 (evt.snapshot as unknown as { value: unknown }).value,
             );
             if (previousState !== newState) {
-                console.log(`[transition] ${previousState} → ${newState} (${evt.event.type})`);
+                console.log(`[transition] ${previousState} → ${newState}`);
                 previousState = newState;
             }
         },
