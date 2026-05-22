@@ -1,4 +1,4 @@
-# AI Agent XState
+# Atlas
 
 Monorepo with two packages:
 
