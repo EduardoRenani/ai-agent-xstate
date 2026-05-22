@@ -36,9 +36,9 @@ import { END } from "./types.ts";
 import type {
     AgentConfig,
     LeafModeConfig,
+    ModesMap,
     PassiveLeafModeConfig,
     RouteTarget,
-    StatesMap,
 } from "./types.ts";
 import { validateRoutes } from "./validateRoutes.ts";
 import { validateTargets } from "./validateTargets.ts";
@@ -74,7 +74,7 @@ type CompoundCarrier = {
     readonly __kind: "compound";
     readonly config: {
         readonly initial: string;
-        readonly states: Record<string, unknown>;
+        readonly modes: Record<string, unknown>;
         readonly onDone: RouteTarget;
         readonly context?: {
             readonly inherit: readonly string[];
@@ -137,20 +137,20 @@ function injectEndAtLevel(
     return rewritten;
 }
 
-// ── Recursive state-map lowering ─────────────────────────────────────
+// ── Recursive mode-map lowering ──────────────────────────────────────
 
 function joinPath(parent: string, name: string): string {
     return parent === "" ? name : `${parent}.${name}`;
 }
 
 function buildStatesMap(
-    states: Record<string, unknown>,
+    modes: Record<string, unknown>,
     parentLift: LiftContext | undefined,
     parentPath: string,
 ): Record<string, LoweredState> {
     const out: Record<string, LoweredState> = {};
 
-    for (const [name, value] of Object.entries(states)) {
+    for (const [name, value] of Object.entries(modes)) {
         const path = joinPath(parentPath, name);
         const carrier = asCarrier(value);
 
@@ -188,7 +188,7 @@ function buildStatesMap(
             ownExit = makeCompoundExit(newLift);
         }
 
-        const childStatesRaw = buildStatesMap(cfg.states, childLift, path);
+        const childStatesRaw = buildStatesMap(cfg.modes, childLift, path);
         const childStates = injectEndAtLevel(childStatesRaw);
 
         const compound: LoweredCompoundState = {
@@ -210,21 +210,21 @@ function buildStatesMap(
 export function compile<
     TContext,
     TEvents extends { type: string },
-    TStates extends StatesMap<TContext, TEvents>,
->(config: AgentConfig<TContext, TEvents, TStates>): AnyStateMachine {
-    const rawStates = config.states as Record<string, unknown>;
+    TModes extends ModesMap<TContext, TEvents>,
+>(config: AgentConfig<TContext, TEvents, TModes>): AnyStateMachine {
+    const rawModes = config.modes as Record<string, unknown>;
 
     // Fail-fast at machine creation — spec verification lines 821 + 824.
-    validateTargets(rawStates);
-    validateRoutes(rawStates);
+    validateTargets(rawModes);
+    validateRoutes(rawModes);
 
-    const slots = walk(rawStates);
+    const slots = walk(rawModes);
     const actors = buildActors(slots);
     const actions = buildActions(
         config.actions as Parameters<typeof buildActions>[0],
     );
 
-    const lowered = buildStatesMap(rawStates, undefined, "");
+    const lowered = buildStatesMap(rawModes, undefined, "");
     const finalStates = injectEndAtLevel(lowered);
 
     // The wrapper's type contract was discharged at the user's call site

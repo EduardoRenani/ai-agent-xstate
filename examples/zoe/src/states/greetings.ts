@@ -13,6 +13,6 @@ export const greetings = defineMode<
     { thinking: typeof greetingsThinking }
 >({
     initial: "thinking",
-    states: { thinking: greetingsThinking },
+    modes: { thinking: greetingsThinking },
     onDone: "classifying",
 });

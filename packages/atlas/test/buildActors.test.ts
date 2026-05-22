@@ -43,7 +43,7 @@ const greetingsThinking = defineLeafMode<Ctx, Events, undefined>({
 
 const greetings: Mode<Ctx, Events> = defineMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
     initial: "thinking",
-    states: { thinking: greetingsThinking },
+    modes: { thinking: greetingsThinking },
     onDone: "listening",
 });
 
@@ -82,7 +82,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     }
 >({
     initial: "teaching",
-    states: {
+    modes: {
         teaching: socraticTeaching,
         listening: socraticListening,
         evaluating: socraticEvaluating,
@@ -90,7 +90,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     onDone: "listening",
 });
 
-const agentStates = {
+const agentModes = {
     listening: rootListening,
     classifying,
     greetings,
@@ -99,7 +99,7 @@ const agentStates = {
 
 describe("buildActors()", () => {
     test("key set covers every active leaf, in walk() order, with passive leaves excluded", () => {
-        const slots = walk(agentStates);
+        const slots = walk(agentModes);
         const actors = buildActors(slots);
 
         expect(Object.keys(actors)).toEqual([
@@ -113,7 +113,7 @@ describe("buildActors()", () => {
     });
 
     test("each entry is a runnable actor logic that yields the user's ModeOutput", async () => {
-        const slots = walk(agentStates);
+        const slots = walk(agentModes);
         const actors = buildActors(slots);
         const logic = actors["classifyingNode"];
         expect(logic).toBeDefined();

@@ -22,7 +22,7 @@ export const socratic = defineMode<
     }
 >({
     initial: "teaching",
-    states: {
+    modes: {
         teaching: socraticTeaching,
         listening: socraticListening,
         evaluating: socraticEvaluating,

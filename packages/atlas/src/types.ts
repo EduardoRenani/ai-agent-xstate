@@ -322,7 +322,7 @@ declare const __modeBrand: unique symbol;
 
 /**
  * Opaque brand returned by `defineLeafMode`. User code cannot inspect the
- * inside — the brand exists only so that `states` slots reject anything
+ * inside — the brand exists only so that `modes` slots reject anything
  * other than the output of `defineLeafMode` / `defineMode`. The phantom
  * `__phantomLeaf` field preserves the generic parameters for inference at
  * slot sites.
@@ -346,7 +346,7 @@ export interface LeafMode<
 
 /**
  * Opaque brand returned by `defineMode`. As with `LeafMode`, user code cannot
- * inspect the inside; the brand only exists to constrain what `states` slots
+ * inspect the inside; the brand only exists to constrain what `modes` slots
  * accept.
  *
  * @template TContext  Context shape provided by the enclosing scope.
@@ -360,17 +360,17 @@ export interface Mode<TContext, TEvents extends { type: string }> {
     };
 }
 
-// ── States map (compound or agent level) ─────────────────────────────
+// ── Modes map (compound or agent level) ──────────────────────────────
 
 /**
- * A `states` map — used at the agent root and inside every compound. Each
+ * A `modes` map — used at the agent root and inside every compound. Each
  * slot is a `LeafMode` or nested `Mode`. **Raw XState configs are not
  * accepted** — `defineLeafMode` / `defineMode` are the only way in.
  *
  * @template TContext  Context shape visible to every slot in this map.
  * @template TEvents   The agent's full event union.
  */
-export type StatesMap<TContext, TEvents extends { type: string }> = Readonly<Record<
+export type ModesMap<TContext, TEvents extends { type: string }> = Readonly<Record<
     string,
     LeafMode<TContext, TEvents> | Mode<TContext, TEvents>
 >>;
@@ -421,7 +421,7 @@ export type LocalContextOf<TParent, TCtx> =
 // ── ModeConfig & AgentConfig ─────────────────────────────────────────
 
 /**
- * The config passed to `defineMode`. `initial` is typed as `keyof TStates` so
+ * The config passed to `defineMode`. `initial` is typed as `keyof TModes` so
  * a typo here is a compile error. `onDone` is the parent-level transition
  * target fired when any child routes to `END`; it accepts a sibling name OR
  * `END` (when the compound itself is nested inside another).
@@ -433,7 +433,7 @@ export type LocalContextOf<TParent, TCtx> =
  * @template TParentContext  Context shape the enclosing scope provides.
  * @template TEvents         The agent's full event union.
  * @template TCtx            Either a `CompoundContext` literal or `undefined`.
- * @template TStates         The compound's `states` map, typed against the
+ * @template TModes          The compound's `modes` map, typed against the
  *                           compound-local context view.
  */
 export type ModeConfig<
@@ -442,19 +442,19 @@ export type ModeConfig<
     TCtx extends
         | CompoundContext<TParentContext, ReadonlyArray<keyof TParentContext & string>, object>
         | undefined,
-    TStates extends StatesMap<LocalContextOf<TParentContext, TCtx>, TEvents>,
+    TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents>,
 > = {
     context?: TCtx;
-    initial: keyof TStates & string;
-    states: TStates;
+    initial: keyof TModes & string;
+    modes: TModes;
     onDone: RouteTarget;
 };
 
 /**
- * The config passed to `defineAgent`. The root of the entire state tree.
+ * The config passed to `defineAgent`. The root of the entire mode tree.
  *
  * - **`id`** — XState machine id.
- * - **`initial`** — keyed against `TStates`; typo = compile error.
+ * - **`initial`** — keyed against `TModes`; typo = compile error.
  * - **`context`** — the agent's root context literal.
  * - **`events`** — phantom field; only its type matters. Pass `{} as TEvents`.
  * - **`actions`** (optional) — registers reusable, pure callbacks referenced
@@ -462,24 +462,24 @@ export type ModeConfig<
  *   `Partial<TContext>`; the wrapper applies `assign(...)` at compile time so
  *   user code never imports from `xstate`. The callback's `event` is typed
  *   as the full `TEvents` union — narrowing is the action body's job.
- * - **`states`** — the root `states` map.
+ * - **`modes`** — the root `modes` map.
  *
  * @template TContext  The agent's root context shape.
  * @template TEvents   The agent's full event union.
- * @template TStates   The root `states` map.
+ * @template TModes    The root `modes` map.
  */
 export type AgentConfig<
     TContext,
     TEvents extends { type: string },
-    TStates extends StatesMap<TContext, TEvents>,
+    TModes extends ModesMap<TContext, TEvents>,
 > = {
     id: string;
-    initial: keyof TStates & string;
+    initial: keyof TModes & string;
     context: TContext;
     events: TEvents;
     actions?: Readonly<Record<
         string,
         (args: { context: TContext; event: TEvents }) => Partial<TContext>
     >>;
-    states: TStates;
+    modes: TModes;
 };

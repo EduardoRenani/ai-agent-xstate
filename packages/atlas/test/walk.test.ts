@@ -45,7 +45,7 @@ const greetingsThinking = defineLeafMode<Ctx, Events, ModeOutput<undefined>["pay
 
 const greetings: Mode<Ctx, Events> = defineMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
     initial: "thinking",
-    states: { thinking: greetingsThinking },
+    modes: { thinking: greetingsThinking },
     onDone: "listening",
 });
 
@@ -84,7 +84,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     }
 >({
     initial: "teaching",
-    states: {
+    modes: {
         teaching: socraticTeaching,
         listening: socraticListening,
         evaluating: socraticEvaluating,
@@ -92,7 +92,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     onDone: "listening",
 });
 
-const agentStates = {
+const agentModes = {
     listening: rootListening,
     classifying,
     greetings,
@@ -101,7 +101,7 @@ const agentStates = {
 
 describe("walk()", () => {
     test("enumerates every slot in depth-first pre-order with dotted paths", () => {
-        const slots = walk(agentStates);
+        const slots = walk(agentModes);
         const summary = slots.map((s) => ({ path: s.path, kind: s.kind }));
 
         expect(summary).toEqual([
@@ -121,7 +121,7 @@ describe("walk()", () => {
         expect(() => walk(bogus)).toThrow(/is not a LeafMode or Mode/);
     });
 
-    test("returns [] for an empty states map", () => {
+    test("returns [] for an empty modes map", () => {
         expect(walk({})).toEqual([]);
     });
 });

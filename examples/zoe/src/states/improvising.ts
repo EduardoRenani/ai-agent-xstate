@@ -11,6 +11,6 @@ export const improvising = defineMode<
     { thinking: typeof improvisingThinking }
 >({
     initial: "thinking",
-    states: { thinking: improvisingThinking },
+    modes: { thinking: improvisingThinking },
     onDone: "classifying",
 });

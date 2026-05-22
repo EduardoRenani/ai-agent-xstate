@@ -64,7 +64,7 @@ describe("compile() — single active leaf agent", () => {
             initial: "classifying",
             context: { messages: ["hi"], turns: 0 },
             events: {} as Events,
-            states: { classifying, done },
+            modes: { classifying, done },
         });
 
         const actor = startedActor(machine);
@@ -96,7 +96,7 @@ describe("compile() — passive leaf agent", () => {
                     return { messages: [...context.messages, e.text] };
                 },
             },
-            states: { listening, echo },
+            modes: { listening, echo },
         });
 
         const actor = startedActor(machine);
@@ -121,7 +121,7 @@ describe("compile() — compound with END exits", () => {
         });
         const group = defineMode<Ctx, Events, undefined, { inner: typeof inner }>({
             initial: "inner",
-            states: { inner },
+            modes: { inner },
             onDone: "done",
         });
         const done = defineLeafMode<Ctx, Events>({ on: {} });
@@ -131,7 +131,7 @@ describe("compile() — compound with END exits", () => {
             initial: "group",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { group, done },
+            modes: { group, done },
         });
 
         const actor = startedActor(machine);
@@ -148,7 +148,7 @@ describe("compile() — END-free compound (5.12)", () => {
         const b = defineLeafMode<Ctx, Events>({ on: {} });
         const group = defineMode<Ctx, Events, undefined, { a: typeof a; b: typeof b }>({
             initial: "a",
-            states: { a, b },
+            modes: { a, b },
             onDone: "other", // not reachable; the compound never finalises
         });
         const other = defineLeafMode<Ctx, Events>({ on: {} });
@@ -158,7 +158,7 @@ describe("compile() — END-free compound (5.12)", () => {
             initial: "group",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { group, other },
+            modes: { group, other },
         });
 
         // `getInitialSnapshot`'s value carries the nested-compound state name;
@@ -195,7 +195,7 @@ describe("compile() — compound with local context", () => {
         >({
             context: { inherit: ["messages"] as const, local: { attempts: 0 } },
             initial: "inner",
-            states: { inner },
+            modes: { inner },
             onDone: "done",
         });
         const done = defineLeafMode<CtxLocal, Events>({ on: {} });
@@ -205,7 +205,7 @@ describe("compile() — compound with local context", () => {
             initial: "group",
             context: { messages: ["hi"] },
             events: {} as Events,
-            states: { group, done },
+            modes: { group, done },
         });
 
         const actor = startedActor(machine);
@@ -252,7 +252,7 @@ describe("compile() — RE_THROW error route", () => {
             initial: "failing",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { failing, done },
+            modes: { failing, done },
         });
 
         // Hand-rolled subscribe — wait for the actor to surface the error.
@@ -286,7 +286,7 @@ describe("compile() — validator integration (fail-fast)", () => {
                 initial: "bad",
                 context: { messages: [], turns: 0 },
                 events: {} as Events,
-                states: { bad },
+                modes: { bad },
             }),
         ).toThrow(/no such sibling/);
     });
@@ -311,7 +311,7 @@ describe("compile() — validator integration (fail-fast)", () => {
                 initial: "bad",
                 context: { messages: [], turns: 0 },
                 events: {} as Events,
-                states: {
+                modes: {
                     bad: carrier as unknown as ReturnType<typeof defineLeafMode<Ctx, Events>>,
                 },
             }),
@@ -333,7 +333,7 @@ describe("compile() — actor naming (DD-008 as invariant)", () => {
         });
         const socratic = defineMode<Ctx, Events, undefined, { evaluating: typeof evaluating }>({
             initial: "evaluating",
-            states: { evaluating },
+            modes: { evaluating },
             onDone: "done",
         });
         const done = defineLeafMode<Ctx, Events>({ on: {} });
@@ -343,7 +343,7 @@ describe("compile() — actor naming (DD-008 as invariant)", () => {
             initial: "socratic",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { socratic, done },
+            modes: { socratic, done },
         });
 
         // Reach into the machine's implementations to assert the actor key.
@@ -402,7 +402,7 @@ describe("compile() — full smoke (representative machine)", () => {
             { thinking: typeof greetingsThinking }
         >({
             initial: "thinking",
-            states: { thinking: greetingsThinking },
+            modes: { thinking: greetingsThinking },
             onDone: "listening",
         });
 
@@ -421,7 +421,7 @@ describe("compile() — full smoke (representative machine)", () => {
                     return { messages: [...context.messages, e.text] };
                 },
             },
-            states: { listening, classifying, greetings },
+            modes: { listening, classifying, greetings },
         });
 
         const actor = startedActor(machine);

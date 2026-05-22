@@ -81,7 +81,7 @@ export const socratic = defineMode({
         local: { attempts: 0 },
     },
     initial: "teaching",
-    states: {
+    modes: {
         teaching:   socraticTeaching,      // defineLeafMode (active)
         listening:  socraticListening,     // defineLeafMode (passive)
         evaluating: socraticEvaluating,    // defineLeafMode (active)
@@ -94,7 +94,7 @@ export const socratic = defineMode({
 });
 ```
 
-`states` accepts exactly two node kinds:
+`modes` accepts exactly two node kinds:
 
 1. A `Mode` (from `defineMode` — i.e. another compound; nesting is unbounded).
 2. A `LeafMode` (from `defineLeafMode` — either active or passive variant; see next section).
@@ -223,7 +223,7 @@ export const zoeMachine = defineAgent({
         }),
     },
 
-    states: {
+    modes: {
         listening: rootListening,   // defineLeafMode (passive)
         classifying,                // defineLeafMode (active)
         greetings,                  // defineMode
@@ -233,13 +233,13 @@ export const zoeMachine = defineAgent({
 });
 ```
 
-`defineAgent.states` accepts only `LeafMode` and `Mode` — same constraint as `defineMode.states`. The root `listening` is a passive `defineLeafMode`; there is no place in the wrapper where raw XState state config is accepted. `defineAgent` returns a standard XState `AnyStateMachine` (the value `xstate.createMachine` returns), so anything that consumes an XState machine today — `createActor`, the inspector API, tests — keeps working unchanged. `createAgentActor` (today in `src/machine.ts`; under `examples/zoe/src/` after the restructure) does not change.
+`defineAgent.modes` accepts only `LeafMode` and `Mode` — same constraint as `defineMode.modes`. The root `listening` is a passive `defineLeafMode`; there is no place in the wrapper where raw XState state config is accepted. `defineAgent` returns a standard XState `AnyStateMachine` (the value `xstate.createMachine` returns), so anything that consumes an XState machine today — `createActor`, the inspector API, tests — keeps working unchanged. `createAgentActor` (today in `src/machine.ts`; under `examples/zoe/src/` after the restructure) does not change.
 
 ### Target resolution
 
 The rule for every `target` field — in `LeafMode.routes`, in passive `LeafMode.on[event]`, and in compound `Mode.onDone` — is the same:
 
-- **Sibling name only.** `target` is a single string that names a key in the **immediate enclosing** `states` map (the compound's, or the agent's). No dotted paths (`"socratic.teaching"`), no XState absolute paths (`"#agent.foo"`), no descendant paths (`".substate"`).
+- **Sibling name only.** `target` is a single string that names a key in the **immediate enclosing** `modes` map (the compound's, or the agent's). No dotted paths (`"socratic.teaching"`), no XState absolute paths (`"#agent.foo"`), no descendant paths (`".substate"`).
 - **Vertical movement only via `END`.** To leave a compound, route to `END`; the parent's `onDone` fires next. There is no "exit two levels at once" shortcut — each level handles its own exit. Nested compounds chain `END` → `onDone: END` to bubble up further.
 - **Lateral movement to a compound sibling enters it at its own `initial`.** `target: "socratic"` from a sibling of `socratic` activates `socratic` and starts at whichever substate `socratic` declares as `initial`. The caller does not pick the substate — that is `socratic`'s concern.
 
@@ -249,7 +249,7 @@ The rule for every `target` field — in `LeafMode.routes`, in passive `LeafMode
 - **Initial-state ownership.** A compound owns its `initial`. Allowing callers to override it via dotted paths leaks that ownership into every caller's source.
 - **Surface area.** One concept (sibling name) instead of three (sibling, descendant, absolute). Smaller blast radius, smaller doc.
 
-**Type-level vs runtime check.** Today the type is `string` because a `LeafMode` does not know its enclosing `states` at definition time (it is defined in one file and slotted into a compound elsewhere). The wrapper's compile step (`compile.ts`) walks the tree, collects every `target` string, and validates it against the actual sibling set at the slot. Unknown targets throw a structured error on machine creation — the error names the offending leaf path, the outcome key, and the bad target. A future spec may tighten this to a type-level check via a placement-time builder, but the cost-benefit is unfavorable today: the runtime error fires the first time `defineAgent` is called (effectively module load), which is one test run away from a compile error in practice.
+**Type-level vs runtime check.** Today the type is `string` because a `LeafMode` does not know its enclosing `modes` at definition time (it is defined in one file and slotted into a compound elsewhere). The wrapper's compile step (`compile.ts`) walks the tree, collects every `target` string, and validates it against the actual sibling set at the slot. Unknown targets throw a structured error on machine creation — the error names the offending leaf path, the outcome key, and the bad target. A future spec may tighten this to a type-level check via a placement-time builder, but the cost-benefit is unfavorable today: the runtime error fires the first time `defineAgent` is called (effectively module load), which is one test run away from a compile error in practice.
 
 ### Type contract
 
@@ -281,13 +281,13 @@ export type RE_THROW = typeof RE_THROW;
 // Targets for `achieved` / `abandoned` entries (no re-throw — those
 // outcomes come from `behavior`'s return, not a rejection).
 //
-// `string` here means a **single sibling state name** — a key in the
-// enclosing compound's (or agent's) `states` map. Dotted paths
+// `string` here means a **single sibling mode name** — a key in the
+// enclosing compound's (or agent's) `modes` map. Dotted paths
 // (`"socratic.teaching"`), XState absolute paths (`"#agent.foo"`), and
 // any other reach-through-the-tree syntax are NOT accepted. Lateral
 // movement only to a sibling; vertical movement only via `END`. The
 // type stays `string` here because the leaf doesn't know its enclosing
-// states at definition time — the wrapper's compile step validates each
+// modes at definition time — the wrapper's compile step validates each
 // `target` against the actual sibling set and throws on machine creation
 // if the name does not resolve. See §"Target resolution" for the rule
 // and rationale.
@@ -398,10 +398,10 @@ export type LeafModeConfig<C, E extends { type: string }, P> =
 export type LeafMode<TContext, TEvents extends { type: string }, TPayload = unknown> = { /* opaque */ };
 export type Mode<TContext, TEvents extends { type: string }> = { /* opaque */ };
 
-// A state slot in a compound or agent — either a leaf mode (active or
+// A mode slot in a compound or agent — either a leaf mode (active or
 // passive) or a nested compound. Raw XState configs are NOT accepted —
-// this is the only way to populate `states`.
-type StatesMap<TContext, TEvents extends { type: string }> = Readonly<Record<
+// this is the only way to populate `modes`.
+type ModesMap<TContext, TEvents extends { type: string }> = Readonly<Record<
     string,
     LeafMode<TContext, TEvents> | Mode<TContext, TEvents>
 >>;
@@ -431,7 +431,7 @@ type LocalContextOf<TParent, TCtx> =
         ? Pick<TParent, I[number]> & L
         : TParent;
 
-// `initial` is typed as `keyof TStates` so a typo here is a compile error.
+// `initial` is typed as `keyof TModes` so a typo here is a compile error.
 // `onDone` is the parent transition target fired when any child routes to
 // `END` (the wrapper injects the final substate). It accepts a sibling
 // name OR `END` (when the compound itself is nested inside another).
@@ -446,11 +446,11 @@ export type ModeConfig<
     TCtx extends
         | CompoundContext<TParentContext, ReadonlyArray<keyof TParentContext & string>, object>
         | undefined,
-    TStates extends StatesMap<LocalContextOf<TParentContext, TCtx>, TEvents>
+    TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents>
 > = {
     context?: TCtx;
-    initial: keyof TStates & string;
-    states: TStates;
+    initial: keyof TModes & string;
+    modes: TModes;
     onDone: RouteTarget;
 };
 
@@ -466,17 +466,17 @@ export type ModeConfig<
 export type AgentConfig<
     TContext,
     TEvents extends { type: string },
-    TStates extends StatesMap<TContext, TEvents>
+    TModes extends ModesMap<TContext, TEvents>
 > = {
     id: string;
-    initial: keyof TStates & string;
+    initial: keyof TModes & string;
     context: TContext;
     events: TEvents;
     actions?: Readonly<Record<
         string,
         (args: { context: TContext; event: TEvents }) => Partial<TContext>
     >>;
-    states: TStates;
+    modes: TModes;
 };
 
 export function defineLeafMode<TContext, TEvents extends { type: string }, TPayload = unknown>(
@@ -485,7 +485,7 @@ export function defineLeafMode<TContext, TEvents extends { type: string }, TPayl
 
 // `TParentContext` is the context the slot enclosing this compound exposes —
 // either the agent's root context (when this compound is mounted directly
-// under `defineAgent.states`) or the enclosing compound's local context
+// under `defineAgent.modes`) or the enclosing compound's local context
 // (when nested). The return type is `Mode<TParentContext, TEvents>` so the
 // compound fits the slot its siblings occupy; the internal narrowing produced
 // by `context` is encapsulated and not visible to the parent.
@@ -495,17 +495,17 @@ export function defineMode<
     TCtx extends
         | CompoundContext<TParentContext, ReadonlyArray<keyof TParentContext & string>, object>
         | undefined,
-    TStates extends StatesMap<LocalContextOf<TParentContext, TCtx>, TEvents>
+    TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents>
 >(
-    config: ModeConfig<TParentContext, TEvents, TCtx, TStates>,
+    config: ModeConfig<TParentContext, TEvents, TCtx, TModes>,
 ): Mode<TParentContext, TEvents>;
 
 export function defineAgent<
     TContext,
     TEvents extends { type: string },
-    TStates extends StatesMap<TContext, TEvents>
+    TModes extends ModesMap<TContext, TEvents>
 >(
-    config: AgentConfig<TContext, TEvents, TStates>,
+    config: AgentConfig<TContext, TEvents, TModes>,
 ): AnyStateMachine;   // from xstate
 ```
 
@@ -542,7 +542,7 @@ const socratic = defineMode({
         local: { attempts: 0 },
     },
     initial: "teaching",
-    states: { teaching: socraticTeaching, listening: socraticListening, evaluating: socraticEvaluating },
+    modes: { teaching: socraticTeaching, listening: socraticListening, evaluating: socraticEvaluating },
     onDone: "classifying",
 });
 
@@ -773,7 +773,7 @@ The project becomes a workspace with one library (`packages/atlas/`) and one ref
 1. **Add workspaces.** Add `workspaces: ["packages/*", "examples/*"]` to root `package.json`. Move all current Atlas application files into `examples/zoe/` and update internal references to the new agent name (`zoe`). Update `scripts.start` to `tsx examples/zoe/src/index.ts` (or use `npm -w zoe start`). The agent's user-facing system prompts ("Voce e Atlas...") are updated to "Voce e Zoe...".
 2. **Create the package skeleton.** `packages/atlas/package.json` with `"type": "module"`, peer dep on `xstate ^5`, no runtime deps. `tsconfig.json` extending the shared base.
 3. **Implement the wrapper.** `compile.ts` walks the state tree, generates actor names, lifts actors into `setup().actors`, expands routes into `onDone`. `defineLeafMode` / `defineMode` / `defineAgent` are thin constructors that hand config to `compile.ts`.
-4. **Migrate Zoe.** Rewrite `examples/zoe/src/machine.ts` and every mode that maps cleanly onto the wrapper today: root `listening`, `classifying`, `greetings.thinking`, `improvising.thinking` — three mode files plus the root passive `listening` (today inline in `machine.ts`). The **entire `socratic` compound is deferred** to a follow-up spec on top of 003. Reason: `socratic.evaluating`'s `retry` semantic in spec 003 is a sideways jump back to `teaching`, which does not map onto the wrapper's self-loop retry. Two paths forward, both behavior changes: (a) restructure the substate graph so the bounce becomes a normal `achieved` + sibling-target transition; or (b) adopt the wrapper's self-loop retry with a counter — the recipe in §Common Patterns "Retry budget", which uses compound-local context. Migrating only `socratic.teaching` and `socratic.listening` would force the socratic compound to mix wrapped and unwrapped substates — the wrapper rejects raw XState nodes inside `defineMode.states`, and adding an escape hatch only to bridge this one mode would re-open the door the wrapper exists to close. Until the follow-up lands, `socratic` stays as-is in XState; the migration still earns its place because the four other modes drop the actor-registration / output-cast / done-substate boilerplate.
+4. **Migrate Zoe.** Rewrite `examples/zoe/src/machine.ts` and every mode that maps cleanly onto the wrapper today: root `listening`, `classifying`, `greetings.thinking`, `improvising.thinking` — three mode files plus the root passive `listening` (today inline in `machine.ts`). The **entire `socratic` compound is deferred** to a follow-up spec on top of 003. Reason: `socratic.evaluating`'s `retry` semantic in spec 003 is a sideways jump back to `teaching`, which does not map onto the wrapper's self-loop retry. Two paths forward, both behavior changes: (a) restructure the substate graph so the bounce becomes a normal `achieved` + sibling-target transition; or (b) adopt the wrapper's self-loop retry with a counter — the recipe in §Common Patterns "Retry budget", which uses compound-local context. Migrating only `socratic.teaching` and `socratic.listening` would force the socratic compound to mix wrapped and unwrapped substates — the wrapper rejects raw XState nodes inside `defineMode.modes`, and adding an escape hatch only to bridge this one mode would re-open the door the wrapper exists to close. Until the follow-up lands, `socratic` stays as-is in XState; the migration still earns its place because the four other modes drop the actor-registration / output-cast / done-substate boilerplate.
 5. **Verify.** Per §Verification below.
 
 The migration is a single PR — splitting it would leave Zoe in a half-wrapped state. The wrapper has no consumers other than Zoe, so backward compatibility is not a concern.
@@ -822,7 +822,7 @@ The migration is a single PR — splitting it would leave Zoe in a half-wrapped 
    - An array-form `routes[outcome]` where the last entry carries `when` (no unguarded default) is a compile error — `RouteList<E>` requires `NoWhen<E>` in the tail position (type-only test).
    - When `routes[outcome]` is cast with `as Routes<...>` to bypass the type constraint, the wrapper's compile step (`compileMode`) re-validates the `RouteList<E>` shape and throws a structured error on machine creation. Runtime test asserts the throw and its message names the offending outcome key and index.
    - **Target resolution** (sibling name only):
-     - A `target` that names a key in the immediate enclosing `states` resolves to an XState sibling transition — assert by snapshotting the generated `onDone[i].target` equals the literal sibling name (runtime test).
+     - A `target` that names a key in the immediate enclosing `modes` resolves to an XState sibling transition — assert by snapshotting the generated `onDone[i].target` equals the literal sibling name (runtime test).
      - A `target` containing `.` (e.g. `"socratic.teaching"`), starting with `#` (XState absolute path), or starting with `.` (descendant path) is rejected by the wrapper's compile step. Runtime test: constructing an agent with such a target throws on `defineAgent(...)` call; the error message names the offending leaf path, the outcome (or event) key, and the literal bad target string.
      - A `target` that is a valid identifier shape but does not name any actual sibling is also rejected at the compile step with the same error format.
      - `target: "siblingCompound"` (sibling is itself a `Mode`) enters the compound at its declared `initial` — assert by snapshotting the resulting state value after the transition (runtime test).

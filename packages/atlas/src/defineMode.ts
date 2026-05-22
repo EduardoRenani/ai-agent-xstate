@@ -12,7 +12,7 @@ import type {
     LocalContextOf,
     Mode,
     ModeConfig,
-    StatesMap,
+    ModesMap,
 } from "./types.ts";
 
 /**
@@ -53,16 +53,16 @@ export type ModeCarrier<TParentContext, TEvents extends { type: string }> = {
  *                           `TParentContext`) or a `CompoundContext` literal
  *                           declaring which keys to `inherit` and which `local`
  *                           variables to declare.
- * @template TStates         The compound's `states` map. Each slot is a
+ * @template TModes          The compound's `modes` map. Each slot is a
  *                           `LeafMode` or nested `Mode` typed against the
  *                           compound-local context view.
  *
- * @param config  `{ context?, initial, states, onDone }`. `initial` is keyed
- *                against `TStates` so a typo is a compile error. `onDone`
+ * @param config  `{ context?, initial, modes, onDone }`. `initial` is keyed
+ *                against `TModes` so a typo is a compile error. `onDone`
  *                accepts a sibling name or `END` (when nested further).
  *
  * @returns An opaque `Mode` brand. Only `defineMode` / `defineAgent` accept it
- *          as a `states` slot.
+ *          as a `modes` slot.
  *
  * @example Compound with context narrowing — children see only `messages`.
  * ```ts
@@ -75,7 +75,7 @@ export type ModeCarrier<TParentContext, TEvents extends { type: string }> = {
  * }>({
  *     context: { inherit: ["messages"] as const, local: { attempts: 0 } },
  *     initial: "thinking",
- *     states: { thinking, evaluating },
+ *     modes: { thinking, evaluating },
  *     onDone: "listening",
  * });
  * ```
@@ -86,9 +86,9 @@ export function defineMode<
     TCtx extends
         | CompoundContext<TParentContext, ReadonlyArray<keyof TParentContext & string>, object>
         | undefined,
-    TStates extends StatesMap<LocalContextOf<TParentContext, TCtx>, TEvents>,
+    TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents>,
 >(
-    config: ModeConfig<TParentContext, TEvents, TCtx, TStates>,
+    config: ModeConfig<TParentContext, TEvents, TCtx, TModes>,
 ): Mode<TParentContext, TEvents> {
     const carrier: ModeCarrier<TParentContext, TEvents> = {
         __kind: "compound",

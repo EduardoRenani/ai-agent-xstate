@@ -10,7 +10,7 @@
 import type { AnyStateMachine } from "xstate";
 
 import { compile } from "./compile.ts";
-import type { AgentConfig, StatesMap } from "./types.ts";
+import type { AgentConfig, ModesMap } from "./types.ts";
 
 /**
  * Construct the **root agent** — compiles the declarative `AgentConfig` into
@@ -18,7 +18,7 @@ import type { AgentConfig, StatesMap } from "./types.ts";
  * touches `xstate`: the return type is `AnyStateMachine`, so callers feed it
  * straight into `createActor`, the inspector, and existing tests.
  *
- * The agent's `states` map can mix `LeafMode`s and nested `Mode`s freely. The
+ * The agent's `modes` map can mix `LeafMode`s and nested `Mode`s freely. The
  * compile step lowers them, validates sibling-target references, injects the
  * `END` synthetic state per-compound when referenced, and wires the
  * payload-driven `routes` into XState transitions.
@@ -28,10 +28,10 @@ import type { AgentConfig, StatesMap } from "./types.ts";
  * @template TEvents   The agent's full event union. Each variant must have a
  *                     `type: string` discriminant. Pass `{} as Ev` to the
  *                     `events` field — only its type matters; it's a phantom.
- * @template TStates   The root `states` map. `initial` is keyed against this
+ * @template TModes    The root `modes` map. `initial` is keyed against this
  *                     type so a typo is a compile error.
  *
- * @param config  `{ id, initial, context, events, actions?, states }`.
+ * @param config  `{ id, initial, context, events, actions?, modes }`.
  *                `actions` registers reusable, pure callbacks (each returning
  *                `Partial<TContext>`) referenced by name from passive
  *                `on[event].actions`. The wrapper wraps them in `assign(...)`
@@ -41,7 +41,7 @@ import type { AgentConfig, StatesMap } from "./types.ts";
  *
  * @example
  * ```ts
- * const agent = defineAgent<Ctx, Ev, States>({
+ * const agent = defineAgent<Ctx, Ev, Modes>({
  *     id: "zoe",
  *     initial: "listening",
  *     context: { messages: [], attempts: 0 },
@@ -52,7 +52,7 @@ import type { AgentConfig, StatesMap } from "./types.ts";
  *                 ? { messages: [...context.messages, { role: "user", content: event.text }] }
  *                 : {},
  *     },
- *     states: { listening, classifying, greetings, socratic },
+ *     modes: { listening, classifying, greetings, socratic },
  * });
  *
  * const actor = createActor(agent).start();
@@ -62,7 +62,7 @@ import type { AgentConfig, StatesMap } from "./types.ts";
 export function defineAgent<
     TContext,
     TEvents extends { type: string },
-    TStates extends StatesMap<TContext, TEvents>,
->(config: AgentConfig<TContext, TEvents, TStates>): AnyStateMachine {
+    TModes extends ModesMap<TContext, TEvents>,
+>(config: AgentConfig<TContext, TEvents, TModes>): AnyStateMachine {
     return compile(config);
 }

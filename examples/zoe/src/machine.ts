@@ -34,7 +34,7 @@ export const agentMachine = defineAgent<
             ],
         }),
     },
-    states: { listening, classifying, greetings, socratic, improvising },
+    modes: { listening, classifying, greetings, socratic, improvising },
 });
 
 // ── Factory ──────────────────────────────────────────────────────────

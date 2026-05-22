@@ -36,7 +36,7 @@ type LeafCarrier = {
 type CompoundCarrier = {
     readonly __kind: "compound";
     readonly config: {
-        readonly states: Record<string, unknown>;
+        readonly modes: Record<string, unknown>;
     };
 };
 
@@ -147,10 +147,10 @@ function validateActiveLeafRoutes(
 // Public entry point. Recursively validates `routes` shape on every active
 // leaf in the tree. Passive leaves are skipped (no `routes` field).
 export function validateRoutes(
-    states: Record<string, unknown>,
+    modes: Record<string, unknown>,
     parentPath: string = "",
 ): void {
-    for (const [name, value] of Object.entries(states)) {
+    for (const [name, value] of Object.entries(modes)) {
         const path = joinPath(parentPath, name);
         const carrier = asCarrier(value, path);
         if (carrier.__kind === "leaf") {
@@ -158,7 +158,7 @@ export function validateRoutes(
                 validateActiveLeafRoutes(carrier.config, path);
             }
         } else {
-            validateRoutes(carrier.config.states, path);
+            validateRoutes(carrier.config.modes, path);
         }
     }
 }

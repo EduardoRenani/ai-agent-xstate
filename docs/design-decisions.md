@@ -270,3 +270,15 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 - **Status quo (raw XState).** Forces the DD-008-011 shape to be hand-written and review-policed. Every new mode pays the same boilerplate; every `onDone` entry casts `event.output` to a payload type. The contract is real but invisible to the compiler.
 - **Replace XState entirely.** XState's runtime (inspector, actor model, hierarchical states) is not the problem — the *authoring surface* is. A custom runtime would re-create those concerns from scratch with no offsetting benefit.
 - **Lift only the actor naming (DD-008) into a helper, leave `routes` raw.** Captures one decision out of four. The `event.output` cast survives at every routing site; the contract between `behavior`'s return and the `onDone` guard array stays untyped. Partial solutions in this area have negative ROI — the value comes from closing all four loops at once.
+
+## 020 — Wrapper vocabulary: `modes`, not `states`
+
+**Date:** 2026-05-22
+
+**Rule:** The wrapper's user-facing collection of slots inside a compound or agent is named `modes`. Every surface type (`AgentConfig.modes`, `ModeConfig.modes`, `ModesMap<TContext, TEvents>`, the `TModes` generic on `defineAgent` / `defineMode`) uses "mode" exclusively. `states` survives only at the XState boundary the wrapper does not own — the `setup().createMachine({ states: ... })` call inside `compile.ts`, `snapshot.value` paths exposed by `createActor`, and other XState-owned surfaces the wrapper explicitly forwards through.
+
+**Rationale:** Ties spec 004 §Verification 5 ("No XState API leakage in user code") to DD-002 ("each state is an agent mode"). The original `states:` field name reintroduced XState's vocabulary at every call site, undermining the mental model the wrapper is supposed to establish: the user authors *modes* (units of agent behavior), and the compiler translates them into XState *states*. Mixing the two terms at the authoring surface forced every reader to context-switch between the wrapper's contract and XState's own. The wrapper still emits `states:` on the XState side because that is XState's API, not the wrapper's — the asymmetry is the point.
+
+**Rejected alternatives:**
+- **Keep `states:` for terminological familiarity with XState users.** Familiarity is the cost, not the benefit: spec 004 §Verification 5 exists specifically to make Zoe (and future consumers) readable without prior XState knowledge. DD-002 already commits to "mode" as the authoring noun; leaving `states:` in the type contract contradicts that commitment at the most visible point of the API.
+- **Expose both `modes:` and `states:` as aliases.** Doubles the surface, invites half-migrations where one file says `modes:` and a sibling says `states:`, and leaves the XState term reachable from user code — the exact leak §Verification 5 forbids.

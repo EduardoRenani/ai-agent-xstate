@@ -26,12 +26,12 @@ function passiveLeaf(): { readonly __kind: "leaf"; readonly config: object } {
 
 function compound(
     initial: string,
-    states: Record<string, unknown>,
+    modes: Record<string, unknown>,
     onDone: unknown = END,
 ): { readonly __kind: "compound"; readonly config: object } {
     return {
         __kind: "compound",
-        config: { initial, states, onDone },
+        config: { initial, modes, onDone },
     };
 }
 

@@ -1,4 +1,4 @@
-// Tree walk over an agent's `states` map.
+// Tree walk over an agent's `modes` map.
 //
 // Spec: docs/specs/004-tasks.md Phase 5.1.
 //
@@ -18,7 +18,7 @@ type LeafCarrier = {
 };
 type CompoundCarrier = {
     readonly __kind: "compound";
-    readonly config: { readonly states: Record<string, unknown> };
+    readonly config: { readonly modes: Record<string, unknown> };
 };
 
 export type LeafSlot = {
@@ -30,7 +30,7 @@ export type LeafSlot = {
 export type CompoundSlot = {
     readonly kind: "compound";
     readonly path: string;
-    readonly config: { readonly states: Record<string, unknown> };
+    readonly config: { readonly modes: Record<string, unknown> };
 };
 
 export type Slot = LeafSlot | CompoundSlot;
@@ -50,18 +50,18 @@ function asCarrier(value: unknown, path: string): LeafCarrier | CompoundCarrier 
 }
 
 export function walk(
-    states: Record<string, unknown>,
+    modes: Record<string, unknown>,
     parentPath = "",
 ): Slot[] {
     const slots: Slot[] = [];
-    for (const [key, value] of Object.entries(states)) {
+    for (const [key, value] of Object.entries(modes)) {
         const path = parentPath === "" ? key : `${parentPath}.${key}`;
         const carrier = asCarrier(value, path);
         if (carrier.__kind === "leaf") {
             slots.push({ kind: "leaf", path, config: carrier.config });
         } else {
             slots.push({ kind: "compound", path, config: carrier.config });
-            slots.push(...walk(carrier.config.states, path));
+            slots.push(...walk(carrier.config.modes, path));
         }
     }
     return slots;

@@ -6,7 +6,7 @@
 // Every `target` declared by the user — `routes.achieved[i].target`,
 // `routes.abandoned[i].target`, `routes.error[i].target`, passive
 // `on[event][i].target`, and a compound's `onDone` — must name a key in
-// the **immediate enclosing** `states` map. The token symbols `END`
+// the **immediate enclosing** `modes` map. The token symbols `END`
 // (achieved/abandoned/error/onDone/passive-on) and `RE_THROW`
 // (error only) pass through verbatim — they are resolved by slices 5.10
 // (RE_THROW) and 5.11 ($end injection).
@@ -37,7 +37,7 @@ type LeafCarrier = {
 type CompoundCarrier = {
     readonly __kind: "compound";
     readonly config: {
-        readonly states: Record<string, unknown>;
+        readonly modes: Record<string, unknown>;
         readonly onDone: unknown;
     };
 };
@@ -177,11 +177,11 @@ function validateCompound(
 // Throws on the first violation — fail-fast surfaces the user's mistake at
 // `defineAgent(...)` call time with full context.
 export function validateTargets(
-    states: Record<string, unknown>,
+    modes: Record<string, unknown>,
     parentPath: string = "",
 ): void {
-    const siblings = Object.keys(states);
-    for (const [name, value] of Object.entries(states)) {
+    const siblings = Object.keys(modes);
+    for (const [name, value] of Object.entries(modes)) {
         const path = joinPath(parentPath, name);
         const carrier = asCarrier(value, path);
         if (carrier.__kind === "leaf") {
@@ -192,8 +192,8 @@ export function validateTargets(
             }
         } else {
             validateCompound(carrier, path, siblings);
-            // Inner siblings = keys of THIS compound's `states` map.
-            validateTargets(carrier.config.states, path);
+            // Inner siblings = keys of THIS compound's `modes` map.
+            validateTargets(carrier.config.modes, path);
         }
     }
 }
