@@ -7,3 +7,4 @@
 | 003 | Specialized Agent Modes | Draft  |
 | 004 | XState Agent Wrapper    | Done   |
 | 005 | Agent Deps & Stringifiable Context | Draft  |
+| 006 | Modes, Not States       | Draft  |
