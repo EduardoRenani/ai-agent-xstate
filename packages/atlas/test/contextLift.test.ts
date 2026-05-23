@@ -28,7 +28,7 @@ import {
 } from "../src/contextLift.ts";
 import { buildActiveState } from "../src/buildActiveState.ts";
 import type { LeafSlot } from "../src/walk.ts";
-import type { ActiveLeafModeConfig, ModeOutput } from "../src/types.ts";
+import type { ActiveModeConfig, ModeOutput } from "../src/types.ts";
 
 describe("compoundLocalKey()", () => {
     test("single segment → `__<name>_local`", () => {
@@ -315,7 +315,7 @@ describe("integration with buildActiveState(slot, lift)", () => {
         type LiftedContext = { messages: string[]; attempts: number };
         type ReceivedInput = { messages: string[]; attempts: number };
 
-        const config: ActiveLeafModeConfig<LiftedContext, { type: string }, { reply: string }> = {
+        const config: ActiveModeConfig<LiftedContext, { type: string }, { reply: string }> = {
             input: ({ context }) => ({
                 messages: context.messages,
                 attempts: context.attempts,
@@ -411,7 +411,7 @@ describe("integration: error route under a lift", () => {
         };
         type LiftedContext = { log: string[]; lastError: string };
 
-        const config: ActiveLeafModeConfig<LiftedContext, { type: string }, { ok: boolean }> = {
+        const config: ActiveModeConfig<LiftedContext, { type: string }, { ok: boolean }> = {
             input: ({ context }) => ({ log: context.log }),
             behavior: async () => {
                 throw new Error("kaboom");
@@ -484,7 +484,7 @@ describe("integration: error route under a lift", () => {
 describe("buildActiveState without lift (backward compatibility)", () => {
     test("input and assign see the full root context verbatim", async () => {
         type Ctx = { count: number; tag: string };
-        const config: ActiveLeafModeConfig<Ctx, { type: string }, { result: string }> = {
+        const config: ActiveModeConfig<Ctx, { type: string }, { result: string }> = {
             input: ({ context }) => ({ count: context.count, tag: context.tag }),
             behavior: async ({ input }) => {
                 const i = input as { count: number; tag: string };
@@ -546,6 +546,6 @@ describe("buildActiveState without lift (backward compatibility)", () => {
 });
 
 // Ensure `ModeOutput` import in the file isn't dropped by the linter — it
-// is referenced by `ActiveLeafModeConfig` generics at the call sites above.
+// is referenced by `ActiveModeConfig` generics at the call sites above.
 const _modeOutputAnchor: ModeOutput<unknown> = { outcome: "achieved", payload: undefined };
 void _modeOutputAnchor;

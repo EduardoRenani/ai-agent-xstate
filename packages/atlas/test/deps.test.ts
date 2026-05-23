@@ -5,7 +5,7 @@ import { createActor } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
-import { defineLeafMode } from "../src/defineLeafMode.ts";
+import { defineMode } from "../src/defineMode.ts";
 import type { ModeOutput } from "../src/types.ts";
 
 type Ctx = { messages: readonly string[]; lastSeenBy: string };
@@ -16,7 +16,7 @@ describe("deps — construction-time freeze and identity", () => {
         type Deps = { tag: string };
         let observedDeps: Readonly<Deps> | undefined;
 
-        const probe = defineLeafMode<Ctx, Events, undefined, Deps>({
+        const probe = defineMode<Ctx, Events, undefined, Deps>({
             input: ({ deps }) => deps,
             behavior: async ({ deps }) => {
                 observedDeps = deps;
@@ -28,7 +28,7 @@ describe("deps — construction-time freeze and identity", () => {
                 abandoned: { target: "done" },
             },
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, Deps>({
             id: "freeze",
@@ -57,7 +57,7 @@ describe("deps — construction-time freeze and identity", () => {
         type NestedDep = { state: { calls: number } };
         let observed: Readonly<NestedDep> | undefined;
 
-        const probe = defineLeafMode<Ctx, Events, undefined, NestedDep>({
+        const probe = defineMode<Ctx, Events, undefined, NestedDep>({
             input: ({ deps }) => deps,
             behavior: async ({ deps }) => {
                 deps.state.calls += 1;
@@ -70,7 +70,7 @@ describe("deps — construction-time freeze and identity", () => {
                 abandoned: { target: "done" },
             },
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const initialState = { calls: 0 };
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, NestedDep>({
@@ -97,7 +97,7 @@ describe("deps — construction-time freeze and identity", () => {
         type Deps = { id: string };
         const seenIn: Record<string, unknown> = {};
 
-        const probe = defineLeafMode<Ctx, Events, { value: number }, Deps>({
+        const probe = defineMode<Ctx, Events, { value: number }, Deps>({
             input: ({ deps }) => {
                 seenIn.input = deps;
                 return null;
@@ -118,7 +118,7 @@ describe("deps — construction-time freeze and identity", () => {
                 abandoned: { target: "done" },
             },
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const depsValue: Deps = { id: "the-one" };
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, Deps>({
@@ -144,7 +144,7 @@ describe("deps — construction-time freeze and identity", () => {
     test("two agents with different deps produce two machines with no cross-talk", async () => {
         type Deps = { id: string };
         const probeFor = (tagDest: { id?: string }) =>
-            defineLeafMode<Ctx, Events, undefined, Deps>({
+            defineMode<Ctx, Events, undefined, Deps>({
                 input: ({ deps }) => deps,
                 behavior: async ({ deps }) => {
                     tagDest.id = deps.id;
@@ -161,7 +161,7 @@ describe("deps — construction-time freeze and identity", () => {
         const bSeen: { id?: string } = {};
         const aProbe = probeFor(aSeen);
         const bProbe = probeFor(bSeen);
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machineA = defineAgent<Ctx, Events, { probe: typeof aProbe; done: typeof done }, Deps>({
             id: "a",
@@ -194,7 +194,7 @@ describe("deps — construction-time freeze and identity", () => {
 describe("deps — defaulting to `{}` when omitted", () => {
     test("a consumer that omits `deps` sees a frozen `{}` in callbacks", async () => {
         let observed: unknown;
-        const probe = defineLeafMode<Ctx, Events, undefined>({
+        const probe = defineMode<Ctx, Events, undefined>({
             input: ({ deps }) => deps,
             behavior: async ({ deps }) => {
                 observed = deps;
@@ -206,7 +206,7 @@ describe("deps — defaulting to `{}` when omitted", () => {
                 abandoned: { target: "done" },
             },
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }>({
             id: "no-deps",

@@ -172,11 +172,11 @@ state → invoke actor → onDone: [
 
 **Date:** 2026-05-20
 
-**Rule:** Agent code expresses its modes through the `atlas` library (`defineLeafMode`, `defineMode`, `defineAgent`) — not through raw XState `setup()` / `createMachine()` / `fromPromise` / `assign` / `onDone` arrays. Importing from `xstate` inside agent source is a wrapper bug, not an escape hatch.
+**Rule:** Agent code expresses its modes through the `atlas` library (`defineMode`, `defineCompoundMode`, `defineAgent`) — not through raw XState `setup()` / `createMachine()` / `fromPromise` / `assign` / `onDone` arrays. Importing from `xstate` inside agent source is a wrapper bug, not an escape hatch.
 
 **Rationale:** Decisions 008-011 codify a recurring shape: each state owns an invoked actor (DD-008), the actor and its prompt live together in a state file (DD-009), the transition after completion is decided by an ordered guard array on `onDone` (DD-010), and side effects are performed inside the actor (DD-011). Expressed in raw XState, that shape forces four separate hand-written pieces per mode — actor registration in `setup({ actors })`, the invoke block, the `onDone` guard array reading `event.output`, and the manual `assign` for context merging — held together by naming convention rather than by the type system. As the agent grows, the boilerplate scales linearly with the mode count and the `event.output` access stays untyped at every site.
 
-The wrapper takes the shape that DD-008-011 already mandate and makes it the only way to express a mode. `defineLeafMode` returns a single object holding `input`, `behavior`, and `routes` (a four-key map: `achieved` / `retry` / `abandoned` / `error`); the wrapper compiles this to the equivalent XState configuration. Actor names are derived from the state path (DD-008 becomes an invariant enforced by the compiler, not a convention enforced by review). The `routes` map closes over a typed `payload`, so `event.output` casts disappear at every call site. Side effects continue to live inside `behavior` (DD-011 unchanged).
+The wrapper takes the shape that DD-008-011 already mandate and makes it the only way to express a mode. `defineMode` returns a single object holding `input`, `behavior`, and `routes` (a four-key map: `achieved` / `retry` / `abandoned` / `error`); the wrapper compiles this to the equivalent XState configuration. Actor names are derived from the state path (DD-008 becomes an invariant enforced by the compiler, not a convention enforced by review). The `routes` map closes over a typed `payload`, so `event.output` casts disappear at every call site. Side effects continue to live inside `behavior` (DD-011 unchanged).
 
 The output of `defineAgent` is a standard XState machine, so `createActor`, the inspector API, and existing tests keep working unchanged. The library is pure compile-time sugar — at runtime there is no extra layer.
 
@@ -247,7 +247,7 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 
 **Date:** 2026-05-20
 
-**Rule:** When a `defineMode` compound declares `context: { inherit, local }`, the compiler allocates a generated key on the agent's flat root context (`__<path>_local`, e.g. `__socratic_local`) holding the `local` shape, emits an `entry` action initializing it from the declared defaults, and emits an `exit` action clearing it. Children inside the compound see a typed view of `Pick<TParent, inherit> & local` in their `input` / `assign` / `when` / `guard` callbacks; the compiler rewrites their reads and writes to hit the lifted slot. Nested compounds chain via a `parent` lift, so an inner write to an outer compound's local key routes to the outer compound's slot, not the agent root.
+**Rule:** When a `defineCompoundMode` compound declares `context: { inherit, local }`, the compiler allocates a generated key on the agent's flat root context (`__<path>_local`, e.g. `__socratic_local`) holding the `local` shape, emits an `entry` action initializing it from the declared defaults, and emits an `exit` action clearing it. Children inside the compound see a typed view of `Pick<TParent, inherit> & local` in their `input` / `assign` / `when` / `guard` callbacks; the compiler rewrites their reads and writes to hit the lifted slot. Nested compounds chain via a `parent` lift, so an inner write to an outer compound's local key routes to the outer compound's slot, not the agent root.
 
 **Rationale:** XState v5 has a single flat context — there is no native per-state context. To honor the wrapper's type contract that gives every compound a logically scoped view, the compiler synthesizes the scope by lifting to a uniquely-named root-context slot. Reads and writes are rewritten at compile time; out-of-scope writes from a child (a write to a parent key that wasn't declared `inherit`) are silently dropped by `splitUserUpdate`, so they cannot reach the actual context. The type system already rejects the same writes at the call site; the runtime drop is belt-and-suspenders against `as Routes<...>` cast bypasses.
 
@@ -255,11 +255,11 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 - **Store per-compound context as a state-tree property:** XState v5 does not support this; reimplementing it would require a parallel state machine, defeating the wrapper's "compile-time sugar" property (DD-012).
 - **Copy inherited keys into the lifted slot on entry and back on exit:** Doubles storage and bookkeeping; copy-back-on-exit conflicts with mid-state writes that need to be visible to siblings outside the compound. Rewriting reads and writes to their authoritative locations avoids the copy entirely.
 
-## 019 — `defineLeafMode` discriminates active vs. passive at the type level
+## 019 — `defineMode` discriminates active vs. passive at the type level
 
 **Date:** 2026-05-20
 
-**Rule:** `LeafModeConfig` is a discriminated union of `ActiveLeafModeConfig` (`input` + `behavior` + `routes`, no `on`) and `PassiveLeafModeConfig` (`on`, no `behavior` / `routes` / `input`). Declaring both shapes on a single `defineLeafMode` call is a compile error.
+**Rule:** `ModeConfig` is a discriminated union of `ActiveModeConfig` (`input` + `behavior` + `routes`, no `on`) and `PassiveModeConfig` (`on`, no `behavior` / `routes` / `input`). Declaring both shapes on a single `defineMode` call is a compile error.
 
 **Rationale:** A leaf that both invokes an actor and handles events at the same time is the confused state where DD-011 (side effects in the actor, not in transitions) and DD-002 (states are agent modes) drift apart — half the behavior is in `behavior`, half in `on` handlers, and the mode-as-a-unit becomes hard to read. If a state genuinely needs both (e.g. perform work, then accept user input), it should be modeled as a compound: an active leaf for the work, a passive sibling for the listening. The type-level rejection forces the modeling choice to be explicit instead of silently merged.
 
@@ -275,7 +275,7 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 
 **Date:** 2026-05-22
 
-**Rule:** The wrapper's user-facing collection of slots inside a compound or agent is named `modes`. Every surface type (`AgentConfig.modes`, `ModeConfig.modes`, `ModesMap<TContext, TEvents>`, the `TModes` generic on `defineAgent` / `defineMode`) uses "mode" exclusively. `states` survives only at the XState boundary the wrapper does not own — the `setup().createMachine({ states: ... })` call inside `compile.ts`, `snapshot.value` paths exposed by `createActor`, and other XState-owned surfaces the wrapper explicitly forwards through.
+**Rule:** The wrapper's user-facing collection of slots inside a compound or agent is named `modes`. Every surface type (`AgentConfig.modes`, `CompoundModeConfig.modes`, `ModesMap<TContext, TEvents>`, the `TModes` generic on `defineAgent` / `defineCompoundMode`) uses "mode" exclusively. `states` survives only at the XState boundary the wrapper does not own — the `setup().createMachine({ states: ... })` call inside `compile.ts`, `snapshot.value` paths exposed by `createActor`, and other XState-owned surfaces the wrapper explicitly forwards through.
 
 **Rationale:** Ties spec 004 §Verification 5 ("No XState API leakage in user code") to DD-002 ("each state is an agent mode"). The original `states:` field name reintroduced XState's vocabulary at every call site, undermining the mental model the wrapper is supposed to establish: the user authors *modes* (units of agent behavior), and the compiler translates them into XState *states*. Mixing the two terms at the authoring surface forced every reader to context-switch between the wrapper's contract and XState's own. The wrapper still emits `states:` on the XState side because that is XState's API, not the wrapper's — the asymmetry is the point.
 
@@ -320,3 +320,16 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 **Rejected alternatives:**
 - **Switch `when` to envelope shape for consistency with `assign` and `guard`.** Consistency at the syntax level masks an inconsistency in purpose: `assign` writes context and `guard` decides whether an event applies — both legitimately depend on world state. `when` only inspects the payload; widening it just because the neighboring fields take envelopes invites the latency-and-side-effect hazard above.
 - **Allow both signatures (bare and envelope) by overload.** Doubles the surface, makes the type-level "you cannot ask for deps in a `when`" test impossible to write, and gives no benefit over the consumer manually destructuring an outer closure if they really do need deps in dispatch (which they shouldn't).
+
+## 024 — `Mode` is the leaf; `CompoundMode` is the composite
+
+**Date:** 2026-05-22
+
+**Rule:** The two carrier types are named for what they *are*, not for what they wrap. A leaf — a single agent mode with `behavior`/`routes` or `on` handlers — is `Mode<TContext, TEvents, TPayload, TDeps>`, constructed via `defineMode(...)`. A node that nests other modes is `CompoundMode<TParentContext, TEvents, TDeps>`, constructed via `defineCompoundMode(...)`. The leaf is the base of the vocabulary because every agent has at least one leaf — there is no agent composed exclusively of compounds — and "mode" without qualifier should mean the unit the user reaches for first. The composite gets the longer name because the composite is the special case.
+
+**Rationale:** The previous vocabulary (`LeafMode` for leaves, `Mode` for compounds) inverted the bias: every author types `defineLeafMode(...)` dozens of times per agent and `defineMode(...)` at most a handful, so the constructor for the common case carried the qualifier and the rare case got the bare noun. The asymmetry crept into spec prose (`Mode` had to be repeatedly disambiguated as "compound" because the bare word meant the composite, not the unit). Renaming flips both surfaces: the constructor a Zoe author calls most often is the short one (`defineMode`), and the unqualified noun in prose ("a Mode") refers to the unit, matching DD-002 ("each state is an agent mode"). The compound's full name (`CompoundMode`) is now self-describing, removing the read-by-context cost. No semantic change: the type contracts, the split-brand contravariance on `TDeps` (DD-022), and the discriminated-union check (DD-019) are untouched; only the names move.
+
+**Rejected alternatives:**
+- **Keep the pre-rename vocabulary (`LeafMode` / `Mode`).** Familiarity with the existing files is the only argument. It is paid for by every future reader of every future spec, where "Mode" still means "the rare, composite kind" — exactly the lexical drag this rename removes. The cost of one mechanical rename PR is a one-time, finite tax; the cost of leaving the names misaligned recurs every time the wrapper is read.
+- **Rename only the constructor (`defineLeafMode` → `defineMode`), keep the type names.** The constructor and its return type would then disagree (`defineMode` returns a `LeafMode`), reintroducing the same disambiguation cost at every signature.
+- **`SimpleMode` / `NestedMode`, or `BaseMode` / `GroupMode`, etc.** Every alternative pair either has the same length-asymmetry problem in reverse or fails to convey what the composite actually does (nest other modes). `Mode` / `CompoundMode` reads the same way the runtime works: a Mode does one thing; a CompoundMode contains other Modes.

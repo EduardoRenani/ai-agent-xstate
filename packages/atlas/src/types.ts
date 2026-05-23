@@ -2,9 +2,15 @@
 //
 // Spec: docs/specs/004-xstate-agent-wrapper.md §"Type contract"
 //        + docs/specs/005-agent-deps-and-stringifiable-context.md
+//        + docs/specs/006-modes-not-states.md
 //
 // This file is pure types + symbol declarations. Runtime construction lives in
-// defineLeafMode.ts / defineMode.ts / defineAgent.ts / compile.ts.
+// defineMode.ts / defineCompoundMode.ts / defineAgent.ts / compile.ts.
+//
+// Vocabulary (DD-024): a `Mode` is a leaf — one node in the agent's state tree
+// with no sub-states; a `CompoundMode` is a Mode that contains sub-Modes.
+// `defineMode` constructs the leaf; `defineCompoundMode` constructs the
+// compound.
 
 // ── JSON shape constraints (spec 005) ────────────────────────────────
 
@@ -73,12 +79,12 @@ export type JsonCompatible<T> =
 // ── Outcomes & ModeOutput ────────────────────────────────────────────
 
 /**
- * The three intentional outcomes a leaf's `behavior` can return:
+ * The three intentional outcomes a Mode's `behavior` can return:
  *
- * - **`"achieved"`** — the leaf's work succeeded. Dispatch via `routes.achieved`.
- * - **`"retry"`** — the leaf should run again on the same state (self-loop).
+ * - **`"achieved"`** — the Mode's work succeeded. Dispatch via `routes.achieved`.
+ * - **`"retry"`** — the Mode should run again on the same state (self-loop).
  *   Dispatch via `routes.retry`.
- * - **`"abandoned"`** — the leaf's work failed in an *expected* way (give up,
+ * - **`"abandoned"`** — the Mode's work failed in an *expected* way (give up,
  *   not crash). Dispatch via `routes.abandoned`.
  *
  * A fourth outcome (`error`) exists, but it is **synthesized by the wrapper**
@@ -88,13 +94,13 @@ export type JsonCompatible<T> =
 export type Outcome = "achieved" | "retry" | "abandoned";
 
 /**
- * The return type of an active leaf's `behavior`. The wrapper inspects
+ * The return type of an active Mode's `behavior`. The wrapper inspects
  * `outcome` to pick the right route bucket and threads `payload` into the
  * matched route's `when` / `assign` callbacks.
  *
  * @template TPayload  Shape of the payload. Constrains the inputs of all
  *                     `routes.*.when` and `routes.*.assign` callbacks on the
- *                     same leaf, so payload-driven dispatch stays type-safe.
+ *                     same Mode, so payload-driven dispatch stays type-safe.
  */
 export type ModeOutput<TPayload = unknown> = {
     outcome: Outcome;
@@ -104,8 +110,8 @@ export type ModeOutput<TPayload = unknown> = {
 // ── Exit & re-throw tokens ───────────────────────────────────────────
 
 /**
- * `END` — the only way for a route to leave a compound mode. Implemented as a
- * unique symbol so it cannot collide with state names (DD-015).
+ * `END` — the only way for a route to leave a `CompoundMode`. Implemented as
+ * a unique symbol so it cannot collide with state names (DD-015).
  *
  * Use as a `target` on `achieved` / `abandoned` route entries when you want
  * the enclosing compound's `onDone` transition to fire.
@@ -148,10 +154,10 @@ export type RE_THROW = typeof RE_THROW;
 /**
  * Target type for `achieved` / `abandoned` entries — a sibling state name or
  * `END`. The `string` half names a sibling in the **immediate enclosing**
- * `states` map; dotted paths, XState absolute paths (`#agent.foo`), and
+ * `modes` map; dotted paths, XState absolute paths (`#agent.foo`), and
  * descendant paths are NOT accepted (DD-016 / spec §"Target resolution").
  *
- * The type stays plain `string` because a leaf doesn't know its enclosing
+ * The type stays plain `string` because a Mode doesn't know its enclosing
  * siblings at definition time — the wrapper's compile step validates against
  * the actual sibling set and throws on machine creation.
  */
@@ -194,7 +200,7 @@ export type ExitEntry<
 
 /**
  * A single entry in `routes.retry`. **Has no `target`** — retry is always a
- * structural self-loop on the same leaf (DD-014). Supplying `target` here is
+ * structural self-loop on the same Mode (DD-014). Supplying `target` here is
  * a compile error.
  *
  * - `when(payload)` — guard. Deps-free.
@@ -281,13 +287,13 @@ export type RouteList<E> =
 // ── Routes — the four-key map ────────────────────────────────────────
 
 /**
- * The full route table for an active leaf — one bucket per `Outcome`, plus an
+ * The full route table for an active Mode — one bucket per `Outcome`, plus an
  * optional `error` bucket for synthesized errors.
  *
  * - **`achieved`** (required) — fired when `behavior` returns `outcome: "achieved"`.
  * - **`retry`** (required) — fired when `behavior` returns `outcome: "retry"`.
  *   Pass `readonly []` for "no special handling" (the wrapper just re-enters
- *   the same leaf).
+ *   the same Mode).
  * - **`abandoned`** (required) — fired when `behavior` returns `outcome: "abandoned"`.
  * - **`error`** (optional) — fired when `behavior` throws / its Promise
  *   rejects. **When omitted, the wrapper re-throws the rejection above the
@@ -321,14 +327,14 @@ export type Routes<
         | RouteList<ErrorEntry<TContext, TDeps>>;
 };
 
-// ── Event handlers (passive mode) ────────────────────────────────────
+// ── Event handlers (passive Mode) ────────────────────────────────────
 
 /**
  * A single passive transition. Fired when the matching event arrives while
- * the leaf is active. For array-form handlers, first match wins (XState
+ * the Mode is active. For array-form handlers, first match wins (XState
  * semantics).
  *
- * - `target` — sibling name or `END`. Passive modes CAN leave a compound on
+ * - `target` — sibling name or `END`. Passive Modes CAN leave a compound on
  *   a particular event.
  * - `actions` — a name (or list of names) referencing entries declared in
  *   `defineAgent.actions`. **Inline callbacks are NOT accepted here** —
@@ -353,7 +359,7 @@ export type EventTransition<
 };
 
 /**
- * The full `on` map for a passive leaf. Keys are event discriminants
+ * The full `on` map for a passive Mode. Keys are event discriminants
  * (`event.type`); values are one transition or an ordered list of them. The
  * transition's `event` callback argument is automatically narrowed to the
  * matching event variant via `Extract<TEvents, { type: K }>`.
@@ -372,22 +378,22 @@ export type EventHandlers<
         | readonly EventTransition<TContext, Extract<TEvents, { type: K }>, TDeps>[];
 };
 
-// ── LeafMode config (discriminated union) ────────────────────────────
+// ── Mode config (discriminated union) ────────────────────────────────
 
 /**
- * Active leaf shape — runs an async `behavior` and dispatches on its
- * `ModeOutput`. Mutually exclusive with `PassiveLeafModeConfig`; mixing
+ * Active Mode shape — runs an async `behavior` and dispatches on its
+ * `ModeOutput`. Mutually exclusive with `PassiveModeConfig`; mixing
  * `behavior` and `on` in the same config is a compile error (DD-019).
  *
  * @template TContext  Context shape visible to `input` / `routes.*.assign`.
  * @template TEvents   Phantom — kept for symmetry with the passive variant.
- *                     Active leaves don't observe events directly.
+ *                     Active Modes don't observe events directly.
  * @template TPayload  Payload type returned by `behavior` and threaded into
  *                     `routes.*.when` / `routes.*.assign`.
  * @template TDeps     Frozen deps container, available in `input` / `behavior`
  *                     / every `routes.*.assign`.
  */
-export type ActiveLeafModeConfig<
+export type ActiveModeConfig<
     TContext,
     TEvents extends { type: string },
     TPayload,
@@ -399,14 +405,14 @@ export type ActiveLeafModeConfig<
 };
 
 /**
- * Passive leaf shape — waits for external events. Mutually exclusive with
- * `ActiveLeafModeConfig`.
+ * Passive Mode shape — waits for external events. Mutually exclusive with
+ * `ActiveModeConfig`.
  *
  * @template TContext  Context shape visible to `on[event].guard`.
  * @template TEvents   The agent's full event union.
  * @template TDeps     Frozen deps container, forwarded to every `on[*].guard`.
  */
-export type PassiveLeafModeConfig<
+export type PassiveModeConfig<
     TContext,
     TEvents extends { type: string },
     TDeps extends Record<string, unknown> = Record<string, never>,
@@ -415,56 +421,56 @@ export type PassiveLeafModeConfig<
 };
 
 /**
- * The discriminated union of leaf config shapes. TypeScript picks the variant
+ * The discriminated union of Mode config shapes. TypeScript picks the variant
  * structurally — by which keys you supply.
  *
- * @template TContext  Context shape this leaf observes.
+ * @template TContext  Context shape this Mode observes.
  * @template TEvents   The agent's full event union.
  * @template TPayload  Payload type for the active variant. Ignored by passive.
  * @template TDeps     Frozen deps container.
  */
-export type LeafModeConfig<
+export type ModeConfig<
     TContext,
     TEvents extends { type: string },
     TPayload,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > =
-    | ActiveLeafModeConfig<TContext, TEvents, TPayload, TDeps>
-    | PassiveLeafModeConfig<TContext, TEvents, TDeps>;
+    | ActiveModeConfig<TContext, TEvents, TPayload, TDeps>
+    | PassiveModeConfig<TContext, TEvents, TDeps>;
 
 // ── Opaque mode markers ──────────────────────────────────────────────
 
-// `LeafMode` and `Mode` are opaque to user code — only `defineLeafMode` and
-// `defineMode` can produce values of these types. Internal shape (config,
-// kind tag) is implementation detail of the wrapper; Phase 3's constructors
-// attach the runtime payload behind the brand.
-declare const __leafBrand: unique symbol;
+// `Mode` and `CompoundMode` are opaque to user code — only `defineMode` and
+// `defineCompoundMode` can produce values of these types. Internal shape
+// (config, kind tag) is implementation detail of the wrapper; Phase 3's
+// constructors attach the runtime payload behind the brand.
 declare const __modeBrand: unique symbol;
+declare const __compoundBrand: unique symbol;
 
 /**
- * Opaque brand returned by `defineLeafMode`. User code cannot inspect the
+ * Opaque brand returned by `defineMode`. User code cannot inspect the
  * inside — the brand exists only so that `modes` slots reject anything
- * other than the output of `defineLeafMode` / `defineMode`. The phantom
- * `__phantomLeaf` field preserves the covariant generic parameters; the
+ * other than the output of `defineMode` / `defineCompoundMode`. The phantom
+ * `__phantomMode` field preserves the covariant generic parameters; the
  * separate `__phantomDeps` field puts `TDeps` in function-argument position
  * so the brand is **contravariant** in `TDeps`. That gives the slot-time
- * variance check the right direction at no syntactic cost: a `LeafMode<…, A>`
- * is assignable to `LeafMode<…, B>` iff `B` is assignable to `A` — i.e. "the
- * agent provides at least every key the mode asks for".
+ * variance check the right direction at no syntactic cost: a `Mode<…, A>`
+ * is assignable to `Mode<…, B>` iff `B` is assignable to `A` — i.e. "the
+ * agent provides at least every key the Mode asks for".
  *
- * @template TContext  Context shape this leaf observes.
+ * @template TContext  Context shape this Mode observes.
  * @template TEvents   The agent's full event union.
  * @template TPayload  Payload type returned by the active variant's `behavior`.
- * @template TDeps     Frozen deps container the leaf demands.
+ * @template TDeps     Frozen deps container the Mode demands.
  */
-export interface LeafMode<
+export interface Mode<
     TContext,
     TEvents extends { type: string },
     TPayload = unknown,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > {
-    readonly [__leafBrand]: true;
-    readonly __phantomLeaf?: {
+    readonly [__modeBrand]: true;
+    readonly __phantomMode?: {
         context: TContext;
         events: TEvents;
         payload: TPayload;
@@ -473,21 +479,21 @@ export interface LeafMode<
 }
 
 /**
- * Opaque brand returned by `defineMode`. Same split-brand contravariance for
- * `TDeps` as `LeafMode`. User code cannot inspect the inside; the brand only
- * exists to constrain what `modes` slots accept.
+ * Opaque brand returned by `defineCompoundMode`. Same split-brand
+ * contravariance for `TDeps` as `Mode`. User code cannot inspect the inside;
+ * the brand only exists to constrain what `modes` slots accept.
  *
  * @template TContext  Context shape provided by the enclosing scope.
  * @template TEvents   The agent's full event union.
  * @template TDeps     Frozen deps container the compound demands.
  */
-export interface Mode<
+export interface CompoundMode<
     TContext,
     TEvents extends { type: string },
     TDeps extends Record<string, unknown> = Record<string, never>,
 > {
-    readonly [__modeBrand]: true;
-    readonly __phantomMode?: {
+    readonly [__compoundBrand]: true;
+    readonly __phantomCompound?: {
         context: TContext;
         events: TEvents;
     };
@@ -497,9 +503,10 @@ export interface Mode<
 // ── Modes map (compound or agent level) ──────────────────────────────
 
 /**
- * A `modes` map — used at the agent root and inside every compound. Each
- * slot is a `LeafMode` or nested `Mode`. **Raw XState configs are not
- * accepted** — `defineLeafMode` / `defineMode` are the only way in.
+ * A `modes` map — used at the agent root and inside every `CompoundMode`.
+ * Each slot is a `Mode` (leaf) or a nested `CompoundMode`. **Raw XState
+ * configs are not accepted** — `defineMode` / `defineCompoundMode` are the
+ * only way in.
  *
  * `TDeps` flows through to every slot, so a single `TDeps` declared at
  * `defineAgent` propagates down through every nested compound's slot map
@@ -515,14 +522,14 @@ export type ModesMap<
     TDeps extends Record<string, unknown> = Record<string, never>,
 > = Readonly<Record<
     string,
-    LeafMode<TContext, TEvents, unknown, TDeps> | Mode<TContext, TEvents, TDeps>
+    Mode<TContext, TEvents, unknown, TDeps> | CompoundMode<TContext, TEvents, TDeps>
 >>;
 
 // ── Compound-local context (lexical scoping) ─────────────────────────
 
 /**
  * Compound-local context declaration. Used as the optional `context` field on
- * `ModeConfig` to narrow what children see.
+ * `CompoundModeConfig` to narrow what children see.
  *
  * - **`inherit`** — list of keys from the enclosing context that are
  *   **live-mirrored** into this compound. Keys NOT in `inherit` are invisible
@@ -565,17 +572,17 @@ export type LocalContextOf<TParent, TCtx> =
         ? Pick<TParent, I[number] & keyof TParent> & L
         : TParent;
 
-// ── ModeConfig & AgentConfig ─────────────────────────────────────────
+// ── CompoundModeConfig & AgentConfig ─────────────────────────────────
 
 /**
- * The config passed to `defineMode`. `initial` is typed as `keyof TModes` so
- * a typo here is a compile error. `onDone` is the parent-level transition
- * target fired when any child routes to `END`; it accepts a sibling name OR
- * `END` (when the compound itself is nested inside another).
+ * The config passed to `defineCompoundMode`. `initial` is typed as
+ * `keyof TModes` so a typo here is a compile error. `onDone` is the parent-
+ * level transition target fired when any child routes to `END`; it accepts a
+ * sibling name OR `END` (when the compound itself is nested inside another).
  *
  * `context` is OPTIONAL. When present, children see only
  * `Pick<TParentContext, inherit[number]> & typeof local`; when omitted they
- * see the full `TParentContext`. See `defineMode` §"Lexical scoping".
+ * see the full `TParentContext`. See `defineCompoundMode` §"Lexical scoping".
  *
  * @template TParentContext  Context shape the enclosing scope provides.
  * @template TEvents         The agent's full event union.
@@ -584,7 +591,7 @@ export type LocalContextOf<TParent, TCtx> =
  *                           compound-local context view.
  * @template TDeps           Frozen deps container. Flows to every slot.
  */
-export type ModeConfig<
+export type CompoundModeConfig<
     TParentContext,
     TEvents extends { type: string },
     // The upper bound here mirrors `CompoundContext`'s structural shape
@@ -607,7 +614,7 @@ export type ModeConfig<
 };
 
 /**
- * The config passed to `defineAgent`. The root of the entire mode tree.
+ * The config passed to `defineAgent`. The root of the entire Mode tree.
  *
  * - **`id`** — XState machine id.
  * - **`initial`** — keyed against `TModes`; typo = compile error.

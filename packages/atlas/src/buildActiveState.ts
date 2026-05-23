@@ -1,4 +1,4 @@
-// Lower an active `LeafMode` slot to an XState `{ invoke: { src, input, onDone, onError? } }`
+// Lower an active `Mode` (leaf) slot to an XState `{ invoke: { src, input, onDone, onError? } }`
 // state. Spec: docs/specs/004-tasks.md Phase 5.6 + 5.7 + 5.9 +
 // docs/specs/004-xstate-agent-wrapper.md §Mapping.
 // Spec 005: every user callback envelope (input, behavior, routes.*.assign)
@@ -57,9 +57,9 @@ import type {
 import type { LeafSlot } from "./walk.ts";
 
 // Internal pass-through placeholder for TContext at this layer. The user's
-// concrete `TContext` has already been enforced by `defineLeafMode`'s
-// generic constraint; the build* helpers see only `unknown`-cast values and
-// only need a JSON-shaped anchor so the alias references compile.
+// concrete `TContext` has already been enforced by `defineMode`'s generic
+// constraint; the build* helpers see only `unknown`-cast values and only need
+// a JSON-shaped anchor so the alias references compile.
 type InternalCtx = JsonObject;
 
 // `Array.isArray` widens `readonly T[]` to `any[]` and does not subtract it

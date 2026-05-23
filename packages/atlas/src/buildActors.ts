@@ -3,7 +3,7 @@
 // §Mapping. Spec 005: the wrapper closes over the agent's frozen `deps`
 // reference and threads it into every active leaf's `behavior` callback.
 //
-// One entry per active `LeafMode` slot, keyed by `actorName(path)`. Each
+// One entry per active `Mode` (leaf) slot, keyed by `actorName(path)`. Each
 // entry wraps the user's `behavior` in
 // `fromPromise(async ({ input }) => behavior({ input, deps }))` — the only
 // place the wrapper bridges user code to XState's actor runtime.
@@ -37,7 +37,7 @@ export function buildActors(
             );
         }
         // The user's `behavior` was typed against its own `TDeps` at the
-        // `defineLeafMode` call site; the internal carrier here erases that
+        // `defineMode` call site; the internal carrier here erases that
         // generic to the default `Record<string, never>`. Cast through the
         // user-facing envelope shape — by-identity threading is the same
         // frozen reference all callbacks receive.

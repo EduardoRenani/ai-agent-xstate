@@ -372,7 +372,7 @@ describe("validateRoutes() — carrier checks", () => {
             validateRoutes({
                 foo: { type: "final" } as unknown,
             }),
-        ).toThrow(/not a LeafMode or Mode/);
+        ).toThrow(/not a Mode or CompoundMode/);
     });
 
     test("rejects unknown carrier kind", () => {

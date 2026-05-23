@@ -9,7 +9,7 @@ import type {
     CompoundContext,
     JsonCompatible,
     JsonObject,
-    LeafMode,
+    Mode,
     ModesMap,
 } from "../../src/types.ts";
 
@@ -216,7 +216,7 @@ describe("TPayload is unconstrained", () => {
         // `routes.*.assign` writes to context is. An `Error` in the payload
         // is fine; it never flows into context unless the user writes it
         // there.
-        type ErrLeaf = LeafMode<Ctx, Events, { err: Error }>;
+        type ErrLeaf = Mode<Ctx, Events, { err: Error }>;
         expectTypeOf<ErrLeaf>().toBeObject();
     });
 });

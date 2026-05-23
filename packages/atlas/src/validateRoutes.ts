@@ -47,8 +47,8 @@ function joinPath(parent: string, name: string): string {
 function asCarrier(value: unknown, path: string): LeafCarrier | CompoundCarrier {
     if (typeof value !== "object" || value === null || !("__kind" in value)) {
         throw new Error(
-            `atlas/validateRoutes: state at "${path}" is not a LeafMode or Mode. ` +
-                `Pass values constructed via defineLeafMode() or defineMode().`,
+            `atlas/validateRoutes: state at "${path}" is not a Mode or CompoundMode. ` +
+                `Pass values constructed via defineMode() or defineCompoundMode().`,
         );
     }
     const kind = (value as { __kind: unknown }).__kind;

@@ -4,8 +4,8 @@
 // docs/specs/004-xstate-agent-wrapper.md §"Lexical scoping of context"
 // (lines 104-111) and §Mapping line 626.
 //
-// A `Mode` with `context: { inherit, local }` exposes a narrowed view to its
-// children: `Pick<TParent, inherit[number]> & typeof local`. At runtime the
+// A `CompoundMode` with `context: { inherit, local }` exposes a narrowed view
+// to its children: `Pick<TParent, inherit[number]> & typeof local`. At runtime the
 // wrapper materializes this view by:
 //   - allocating a slot under a generated root-context key (`__<path>_local`)
 //     initialized to `local` on every entry, cleared on every exit

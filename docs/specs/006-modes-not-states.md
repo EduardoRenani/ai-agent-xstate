@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft. Orthogonal to 005 — both touch `packages/atlas/src/types.ts` but neither depends on the other; either can land first. The single-PR migration is mechanical (rename, no semantic change).
+Done. Landed in the spec-006 migration; the vocabulary refinement that followed (`Mode` / `LeafMode` → `Mode` / `CompoundMode`) is recorded under DD-024 and was applied uniformly to this spec's prose. The compiled XState output and the `compile.ts` boundary that emits XState's `states` field are unchanged.
 
 ## Goal
 
@@ -11,9 +11,9 @@ Rename the wrapper's user-facing collection of mode slots from `states` to `mode
 Concretely:
 
 - `AgentConfig.states` → `AgentConfig.modes`
-- `ModeConfig.states` → `ModeConfig.modes`
+- `CompoundModeConfig.states` → `CompoundModeConfig.modes`
 - `StatesMap<TContext, TEvents>` → `ModesMap<TContext, TEvents>`
-- `TStates` generic → `TModes` (on `defineAgent`, `defineMode`, and the type aliases that propagate them)
+- `TStates` generic → `TModes` (on `defineAgent`, `defineCompoundMode`, and the type aliases that propagate them)
 - `initial: keyof TStates` → `initial: keyof TModes` (mechanically follows the generic rename)
 
 The compiled XState output is **unchanged**: `compile.ts` still emits `setup().createMachine({ id, initial, context, states: { ... } })` because that is XState's own API. Only the wrapper's surface vocabulary changes.
@@ -22,7 +22,7 @@ The compiled XState output is **unchanged**: `compile.ts` still emits `setup().c
 
 ### P7 — `states` is XState terminology leaking through the wrapper
 
-Spec 004 §Verification line 845 ("No XState API leakage in user code") is the wrapper's stated invariant: every name a user writes should belong to the wrapper, not to XState. The current `states:` field violates that. The values are typed as `LeafMode<C, E, P> | Mode<C, E>` (`packages/atlas/src/types.ts:373-376`), constructed via `defineLeafMode` / `defineMode`, and discussed throughout the docs as "the modes the agent has". Calling the field that holds them `states` forces the reader to translate: "states here means the wrapper's modes, which compile to XState states". The field's name should match what the user writes into it.
+Spec 004 §Verification line 845 ("No XState API leakage in user code") is the wrapper's stated invariant: every name a user writes should belong to the wrapper, not to XState. The current `states:` field violates that. The values are typed as `Mode<C, E, P> | CompoundMode<C, E>` (`packages/atlas/src/types.ts:373-376`), constructed via `defineMode` / `defineCompoundMode`, and discussed throughout the docs as "the modes the agent has". Calling the field that holds them `states` forces the reader to translate: "states here means the wrapper's modes, which compile to XState states". The field's name should match what the user writes into it.
 
 ### P8 — Field name and value type disagree
 
@@ -31,15 +31,15 @@ Spec 004 §Verification line 845 ("No XState API leakage in user code") is the w
 ```ts
 type StatesMap<TContext, TEvents> = Readonly<Record<
     string,
-    LeafMode<TContext, TEvents> | Mode<TContext, TEvents>
+    Mode<TContext, TEvents> | CompoundMode<TContext, TEvents>
 >>;
 ```
 
-The type alias's name is `StatesMap`, but its element type is `LeafMode | Mode`. The whole reason `StatesMap` rejects raw XState configs (spec 004 §`defineMode` line 102: "No raw XState configs. Anything the agent needs is expressible through these two primitives plus `END`") is *because* the wrapper has its own concept — modes — that is the only legitimate way to populate the slot. The naming should reflect that.
+The type alias's name is `StatesMap`, but its element type is `Mode | CompoundMode`. The whole reason `StatesMap` rejects raw XState configs (spec 004 §`defineCompoundMode` line 102: "No raw XState configs. Anything the agent needs is expressible through these two primitives plus `END`") is *because* the wrapper has its own concept — modes — that is the only legitimate way to populate the slot. The naming should reflect that.
 
 ### P9 — DD-002 ("each state is a mode") is asymmetric on the surface
 
-DD-002 establishes the mode-as-state equivalence as the wrapper's mental model. The constructors honor it (`defineMode`, `defineLeafMode`). The brands honor it (`Mode`, `LeafMode`). The field that aggregates them does not. After this spec, every user-facing name on the wrapper's surface uses "mode"; "state" survives only at the XState boundary (which the wrapper does not own and explicitly forwards through, per spec 004 line 236: "returns a standard XState `AnyStateMachine`").
+DD-002 establishes the mode-as-state equivalence as the wrapper's mental model. The constructors honor it (`defineCompoundMode`, `defineMode`). The brands honor it (`CompoundMode`, `Mode`). The field that aggregates them does not. After this spec, every user-facing name on the wrapper's surface uses "mode"; "state" survives only at the XState boundary (which the wrapper does not own and explicitly forwards through, per spec 004 line 236: "returns a standard XState `AnyStateMachine`").
 
 ## Public API Changes
 
@@ -71,10 +71,10 @@ export function defineAgent<
 ): AnyStateMachine;
 ```
 
-### `defineMode`
+### `defineCompoundMode`
 
 ```ts
-export type ModeConfig<
+export type CompoundModeConfig<
     TParentContext,
     TEvents extends { type: string },
     TCtx extends
@@ -88,7 +88,7 @@ export type ModeConfig<
     onDone: RouteTarget;
 };
 
-export function defineMode<
+export function defineCompoundMode<
     TParentContext,
     TEvents extends { type: string },
     TCtx extends
@@ -96,8 +96,8 @@ export function defineMode<
         | undefined,
     TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents>,
 >(
-    config: ModeConfig<TParentContext, TEvents, TCtx, TModes>,
-): Mode<TParentContext, TEvents>;
+    config: CompoundModeConfig<TParentContext, TEvents, TCtx, TModes>,
+): CompoundMode<TParentContext, TEvents>;
 ```
 
 ### `ModesMap`
@@ -105,13 +105,13 @@ export function defineMode<
 ```ts
 export type ModesMap<TContext, TEvents extends { type: string }> = Readonly<Record<
     string,
-    LeafMode<TContext, TEvents> | Mode<TContext, TEvents>
+    Mode<TContext, TEvents> | CompoundMode<TContext, TEvents>
 >>;
 ```
 
-### `defineLeafMode`
+### `defineMode`
 
-Unchanged. `LeafMode` has no nested mode collection.
+Unchanged. `Mode` has no nested mode collection.
 
 ### Worked example: Zoe `machine.ts`
 
@@ -170,7 +170,7 @@ The compile step continues to emit XState's `states` field unchanged:
 | Wrapper concept                         | XState equivalent generated by `compile.ts`        |
 | --------------------------------------- | --------------------------------------------------- |
 | `AgentConfig.modes`                     | `setup().createMachine({ states: { ... } })`        |
-| `ModeConfig.modes` (compound)           | `{ initial, states: { ... }, onDone }`              |
+| `CompoundModeConfig.modes` (compound)           | `{ initial, states: { ... }, onDone }`              |
 | `AgentConfig.initial` (keyof `TModes`)  | `setup().createMachine({ initial })` — unchanged    |
 
 `compile.ts` reads `config.modes` from the wrapper's input and writes XState's `states` in the output. Snapshot `value` paths (`actor.getSnapshot().value === "socratic.teaching"`) are produced by XState and continue to use XState's path format — the wrapper does not rewrite snapshot output, only input vocabulary.
@@ -204,12 +204,12 @@ Single PR, four mechanical layers in order:
 | `docs/design-decisions.md`                          | New DD recording the wrapper-vocabulary rename and its tie to spec 004 §Verification 5 |
 | `docs/specs/004-xstate-agent-wrapper.md`            | Replace `TStates` → `TModes`, `StatesMap` → `ModesMap`, `states:` → `modes:` throughout |
 | `docs/specs/005-agent-deps-and-stringifiable-context.md` | Same rename in signatures, File Map, and prose                                  |
-| `packages/atlas/src/types.ts`                       | Rename `StatesMap` → `ModesMap`; rename `TStates` → `TModes` in `AgentConfig`, `ModeConfig`; rename the field `states: TStates` → `modes: TModes`; update JSDoc |
+| `packages/atlas/src/types.ts`                       | Rename `StatesMap` → `ModesMap`; rename `TStates` → `TModes` in `AgentConfig`, `CompoundModeConfig`; rename the field `states: TStates` → `modes: TModes`; update JSDoc |
 | `packages/atlas/src/defineAgent.ts`                 | Rename `TStates` → `TModes`; update JSDoc                                              |
-| `packages/atlas/src/defineMode.ts`                  | Rename `TStates` → `TModes`; update JSDoc                                              |
+| `packages/atlas/src/defineCompoundMode.ts`                  | Rename `TStates` → `TModes`; update JSDoc                                              |
 | `packages/atlas/src/compile.ts`                     | Read `config.modes` instead of `config.states`; keep emitting XState's `states` in the output; rename the local `TStates` generic |
 | `packages/atlas/src/walk.ts`                        | If the walker reads `config.states` for compound modes, change to `config.modes`. Compile output unaffected |
-| `packages/atlas/test/*.test.ts`                     | Every `defineAgent({ states: ... })` and `defineMode({ states: ... })` → `modes:`     |
+| `packages/atlas/test/*.test.ts`                     | Every `defineAgent({ states: ... })` and `defineCompoundMode({ states: ... })` → `modes:`     |
 | `packages/atlas/test/types/*.test-d.ts`             | Update generic names in `expectTypeOf` cases                                          |
 | `examples/zoe/src/machine.ts`                       | `states: { ... }` → `modes: { ... }`                                                  |
 
@@ -219,9 +219,9 @@ No file outside this list is touched. No production behavior changes.
 
 1. **Type-only tests** (`packages/atlas/test/types/*.test-d.ts`):
    - A `defineAgent({ modes: { foo: someLeaf } })` with `initial: "foo"` compiles. With `initial: "bar"` (not a key of `modes`) is a compile error.
-   - Same for `defineMode`.
+   - Same for `defineCompoundMode`.
    - Constructing with `states:` (the old name) is a compile error: the type system reports "object literal may only specify known properties, did you mean 'modes'?". This proves the rename is exhaustive — no struct-typing accidental compatibility.
-   - `ModesMap<TContext, TEvents>` accepts `LeafMode<C, E, P>` and `Mode<C, E>` values; raw XState configs are still rejected.
+   - `ModesMap<TContext, TEvents>` accepts `Mode<C, E, P>` and `CompoundMode<C, E>` values; raw XState configs are still rejected.
 2. **Runtime tests**:
    - Every existing scenario in `examples/zoe/test/machine.test.ts` passes unchanged in behavior: same conversation flows, same `actor.getSnapshot().value` strings (XState's `states` path format is untouched).
    - `agentMachine.config.states` (XState's introspection) still returns the compiled state map — confirms `compile.ts` emits XState's `states` field unchanged.
@@ -234,7 +234,7 @@ No file outside this list is touched. No production behavior changes.
 ## Out of Scope
 
 - Renaming the XState-facing `Snapshot.value` paths or any compile output that crosses into XState. The wrapper does not own those.
-- Renaming `Mode` / `LeafMode` themselves. The brand types and the constructors already use the right vocabulary.
+- Further refining `Mode` / `LeafMode` into `Mode` (the leaf) / `CompoundMode` (the composite). That refinement landed in a follow-up PR recorded under DD-024; this spec's prose has since been rewritten in the post-refinement vocabulary.
 - Renaming `state.value` in code that uses `actor.getSnapshot().value` — that is XState's API, not the wrapper's.
 - Renaming `TParentContext` / `TCtx` to a uniform `TLocalContext` family. Defensible but cosmetic and independent — earns its own spec if pursued.
 - Renaming `TStates`-adjacent identifiers in spec 003 prose. Spec 003 predates the wrapper and discusses states in the XState sense; rewriting it is out of scope here.

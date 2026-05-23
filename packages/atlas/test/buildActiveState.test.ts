@@ -6,7 +6,7 @@ import { createActor, setup, fromPromise } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { buildActiveState } from "../src/buildActiveState.ts";
-import { defineLeafMode } from "../src/defineLeafMode.ts";
+import { defineMode } from "../src/defineMode.ts";
 import { END, RE_THROW } from "../src/types.ts";
 import type { ModeOutput } from "../src/types.ts";
 import type { LeafSlot } from "../src/walk.ts";
@@ -15,12 +15,12 @@ type Ctx = { messages: readonly string[]; count: number };
 type Events = { type: "MESSAGE"; text: string };
 type P = { intent: "greeting" | "general" };
 
-// Helper: take a `LeafMode` carrier and synthesize a LeafSlot at the given
+// Helper: take a `Mode` carrier and synthesize a LeafSlot at the given
 // path so the test can exercise `buildActiveState` directly without going
 // through the full walk.
 function slotAt(
     path: string,
-    leaf: ReturnType<typeof defineLeafMode<Ctx, Events, P>>,
+    leaf: ReturnType<typeof defineMode<Ctx, Events, P>>,
 ): LeafSlot {
     const carrier = leaf as unknown as {
         __kind: "leaf";
@@ -38,7 +38,7 @@ function fakeDone(out: ModeOutput<unknown>) {
 describe("buildActiveState() — structure & ordering (5.6)", () => {
     test("single-entry routes: onDone = [achieved, retry, abandoned] in that order", () => {
         const inputFn = ({ context }: { context: Ctx }) => context.messages;
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: inputFn,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -63,7 +63,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
     });
 
     test("RouteList form: each entry produces one onDone transition, in array order", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -94,7 +94,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
     });
 
     test("`retry: []` (no special handling) produces zero retry onDone entries", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -112,7 +112,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
     });
 
     test("nested leaf path: retry self-loop uses the last segment, not the dotted path", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -131,7 +131,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
     });
 
     test("rejects a passive leaf slot", () => {
-        const leaf = defineLeafMode<Ctx, Events>({
+        const leaf = defineMode<Ctx, Events>({
             on: { MESSAGE: { target: "classifying" } },
         });
         const carrier = leaf as unknown as { __kind: "leaf"; config: unknown };
@@ -146,7 +146,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
 
 describe("buildActiveState() — guards (5.7)", () => {
     test("entry-default guard: outcome match only, no `when`", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -174,7 +174,7 @@ describe("buildActiveState() — guards (5.7)", () => {
     });
 
     test("guard combines outcome check AND user's `when(payload)` (first match wins encoding)", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -209,7 +209,7 @@ describe("buildActiveState() — assign wrapping (5.7)", () => {
         // assert the context update.
         type LocalP = { value: number };
 
-        const leaf = defineLeafMode<Ctx, Events, LocalP>({
+        const leaf = defineMode<Ctx, Events, LocalP>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { value: 7 } } satisfies ModeOutput<LocalP>),
             routes: {
@@ -260,7 +260,7 @@ describe("buildActiveState() — assign wrapping (5.7)", () => {
     });
 
     test("missing `assign` → no `actions` field on the transition", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -283,7 +283,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
     }
 
     test("`routes.error` omitted → no `onError` field on the lowered invoke", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -297,7 +297,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
     });
 
     test("single ErrorEntry → onError[0] with default-true guard, target preserved", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -316,7 +316,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
     });
 
     test("RouteList: `when(error)` filters; default fires when nothing else matches", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -348,7 +348,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
     test("error `assign({ context, error })` is applied to context end-to-end", async () => {
         const boom = new Error("kaboom");
 
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => {
                 throw boom;
@@ -412,7 +412,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
     }
 
     test("`target: RE_THROW` produces a transition with no target and a re-throw action", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -430,7 +430,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
     });
 
     test("the re-throw action throws the captured rejection when invoked", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -450,7 +450,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
     });
 
     test("RE_THROW preserves the user's `when` filter — guard still fires conditionally", () => {
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {
@@ -480,7 +480,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
         // The user's `assign` is supplied but must be ignored — RE_THROW's
         // only side effect is the re-throw.
         let assignCalled = false;
-        const leaf = defineLeafMode<Ctx, Events, P>({
+        const leaf = defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<P>),
             routes: {

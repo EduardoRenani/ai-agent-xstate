@@ -40,9 +40,9 @@ import { END } from "./types.ts";
 import type {
     AgentConfig,
     JsonObject,
-    LeafModeConfig,
+    ModeConfig,
     ModesMap,
-    PassiveLeafModeConfig,
+    PassiveModeConfig,
     RouteTarget,
 } from "./types.ts";
 import { validateRoutes } from "./validateRoutes.ts";
@@ -68,12 +68,12 @@ type LoweredState = LoweredLeafState | LoweredCompoundState | LoweredFinalState;
 // ── Carrier shapes (runtime discriminator) ───────────────────────────
 //
 // Re-declared as loose runtime shapes — the user's generic types have done
-// their job at the call site (defineLeafMode / defineMode). The walk layer
-// only reads the runtime payload.
+// their job at the call site (defineMode / defineCompoundMode). The walk
+// layer only reads the runtime payload.
 
 // The internal "loose" placeholder for TContext at the carrier layer. The
 // type system has already enforced `JsonCompatible<TContext>` at the user's
-// `defineLeafMode` / `defineMode` / `defineAgent` call site; here we only
+// `defineMode` / `defineCompoundMode` / `defineAgent` call site; here we only
 // need a structural pass-through that itself satisfies the JSON constraint
 // so the alias references compile. `JsonObject` is a self-referential JSON
 // shape (its value type is `JsonValue`), which is the loosest such anchor.
@@ -81,7 +81,7 @@ type InternalCtx = JsonObject;
 
 type LeafCarrier = {
     readonly __kind: "leaf";
-    readonly config: LeafModeConfig<InternalCtx, { type: string }, unknown>;
+    readonly config: ModeConfig<InternalCtx, { type: string }, unknown>;
 };
 type CompoundCarrier = {
     readonly __kind: "compound";
@@ -175,7 +175,7 @@ function buildStatesMap(
                 out[name] = buildActiveState(slot, parentLift, deps);
             } else {
                 out[name] = buildPassiveState(
-                    config as PassiveLeafModeConfig<InternalCtx, { type: string }>,
+                    config as PassiveModeConfig<InternalCtx, { type: string }>,
                     parentLift,
                     deps,
                 );
@@ -252,7 +252,7 @@ export function compile<
     const finalStates = injectEndAtLevel(lowered);
 
     // The wrapper's type contract was discharged at the user's call site
-    // (defineLeafMode / defineMode / defineAgent). At this internal layer
+    // (defineMode / defineCompoundMode / defineAgent). At this internal layer
     // every shape is `unknown`-typed by construction. XState's `setup` types
     // are too strict to satisfy generically — its `MachineContext` constraint
     // collides with `TContext` being arbitrary — so we hand it the already-

@@ -1,16 +1,16 @@
 // Spec 005 type tests: `TDeps` variance at slot time + `deps` threading in
-// callback envelopes. Spec §`defineLeafMode` (split-brand contravariance) +
+// callback envelopes. Spec §`defineMode` (split-brand contravariance) +
 // §Routes / EventHandlers + §Verification.
 
 import { describe, expectTypeOf, test } from "vitest";
 
 import type {
-    ActiveLeafModeConfig,
+    ActiveModeConfig,
     EventTransition,
     ExitEntry,
-    LeafMode,
     Mode,
-    PassiveLeafModeConfig,
+    CompoundMode,
+    PassiveModeConfig,
 } from "../../src/types.ts";
 
 type Ctx = { messages: readonly string[]; count: number };
@@ -22,48 +22,48 @@ interface SqliteDriver { exec(q: string): Promise<unknown>; }
 interface Logger { info(m: string): void; }
 
 describe("TDeps default (`Record<string, never>`) — slot anywhere", () => {
-    test("a LeafMode with default TDeps is assignable to a slot demanding any TDeps", () => {
+    test("a Mode with default TDeps is assignable to a slot demanding any TDeps", () => {
         // The slot inside a `ModesMap<C, E, AgentDeps>` is
-        // `LeafMode<C, E, unknown, AgentDeps>`. Contravariance means a leaf
+        // `Mode<C, E, unknown, AgentDeps>`. Contravariance means a leaf
         // with `Record<string, never>` deps fits regardless of what the agent
         // declares.
-        type DefaultLeaf = LeafMode<Ctx, Events, P>;
-        type AgentSlotWithDb = LeafMode<Ctx, Events, unknown, { db: PgDriver }>;
-        type AgentSlotWithAll = LeafMode<Ctx, Events, unknown, { db: PgDriver; logger: Logger }>;
+        type DefaultLeaf = Mode<Ctx, Events, P>;
+        type AgentSlotWithDb = Mode<Ctx, Events, unknown, { db: PgDriver }>;
+        type AgentSlotWithAll = Mode<Ctx, Events, unknown, { db: PgDriver; logger: Logger }>;
 
         expectTypeOf<DefaultLeaf>().toMatchTypeOf<AgentSlotWithDb>();
         expectTypeOf<DefaultLeaf>().toMatchTypeOf<AgentSlotWithAll>();
     });
 });
 
-describe("TDeps variance — `LeafMode<…, ModeDeps>` fits slot when `AgentDeps` ⊇ `ModeDeps`", () => {
+describe("TDeps variance — `Mode<…, ModeDeps>` fits slot when `AgentDeps` ⊇ `ModeDeps`", () => {
     test("mode demanding `{ db }` fits an agent with `{ db, logger }` (superset)", () => {
-        type ModeNeedsDb = LeafMode<Ctx, Events, P, { db: PgDriver }>;
-        type AgentSlot = LeafMode<Ctx, Events, unknown, { db: PgDriver; logger: Logger }>;
+        type ModeNeedsDb = Mode<Ctx, Events, P, { db: PgDriver }>;
+        type AgentSlot = Mode<Ctx, Events, unknown, { db: PgDriver; logger: Logger }>;
         expectTypeOf<ModeNeedsDb>().toMatchTypeOf<AgentSlot>();
     });
 
     test("mode demanding `{ db }` REJECTS an agent with just `{ logger }` (missing key)", () => {
-        type ModeNeedsDb = LeafMode<Ctx, Events, P, { db: PgDriver }>;
-        type AgentSlot = LeafMode<Ctx, Events, unknown, { logger: Logger }>;
+        type ModeNeedsDb = Mode<Ctx, Events, P, { db: PgDriver }>;
+        type AgentSlot = Mode<Ctx, Events, unknown, { logger: Logger }>;
         // @ts-expect-error - agent lacks `db`, mode needs it
         expectTypeOf<ModeNeedsDb>().toMatchTypeOf<AgentSlot>();
     });
 
     test("same key, incompatible value type — REJECTED at the slot", () => {
-        // Mode wants `db: PgDriver` (a `query` method); agent provides
+        // CompoundMode wants `db: PgDriver` (a `query` method); agent provides
         // `db: SqliteDriver` (an `exec` method). The value types don't
         // unify, so contravariance rejects the slot.
-        type ModeNeedsPg = LeafMode<Ctx, Events, P, { db: PgDriver }>;
-        type AgentSlotSqlite = LeafMode<Ctx, Events, unknown, { db: SqliteDriver }>;
+        type ModeNeedsPg = Mode<Ctx, Events, P, { db: PgDriver }>;
+        type AgentSlotSqlite = Mode<Ctx, Events, unknown, { db: SqliteDriver }>;
         // @ts-expect-error - PgDriver and SqliteDriver are not assignable
         expectTypeOf<ModeNeedsPg>().toMatchTypeOf<AgentSlotSqlite>();
     });
 
-    test("same direction holds for `Mode` (compound)", () => {
-        type CompoundNeedsDb = Mode<Ctx, Events, { db: PgDriver }>;
-        type AgentSlotAll = Mode<Ctx, Events, { db: PgDriver; logger: Logger }>;
-        type AgentSlotLoggerOnly = Mode<Ctx, Events, { logger: Logger }>;
+    test("same direction holds for `CompoundMode` (compound)", () => {
+        type CompoundNeedsDb = CompoundMode<Ctx, Events, { db: PgDriver }>;
+        type AgentSlotAll = CompoundMode<Ctx, Events, { db: PgDriver; logger: Logger }>;
+        type AgentSlotLoggerOnly = CompoundMode<Ctx, Events, { logger: Logger }>;
 
         expectTypeOf<CompoundNeedsDb>().toMatchTypeOf<AgentSlotAll>();
         // @ts-expect-error - compound needs `db`, agent doesn't have it
@@ -75,7 +75,7 @@ describe("`deps` threading in callback envelopes", () => {
     type Deps = { db: PgDriver; logger: Logger };
 
     test("`input` sees `{ context, deps }`", () => {
-        const config: ActiveLeafModeConfig<Ctx, Events, P, Deps> = {
+        const config: ActiveModeConfig<Ctx, Events, P, Deps> = {
             input: ({ context, deps }) => {
                 expectTypeOf(context).toEqualTypeOf<Ctx>();
                 expectTypeOf(deps).toEqualTypeOf<Deps>();
@@ -92,7 +92,7 @@ describe("`deps` threading in callback envelopes", () => {
                 abandoned: { target: "fallback" },
             },
         };
-        expectTypeOf(config).toMatchTypeOf<ActiveLeafModeConfig<Ctx, Events, P, Deps>>();
+        expectTypeOf(config).toMatchTypeOf<ActiveModeConfig<Ctx, Events, P, Deps>>();
     });
 
     test("`routes.achieved.assign` sees `{ context, payload, deps }`", () => {
@@ -109,7 +109,7 @@ describe("`deps` threading in callback envelopes", () => {
     });
 
     test("`EventTransition.guard` sees `{ context, event, deps }`", () => {
-        const config: PassiveLeafModeConfig<Ctx, Events, Deps> = {
+        const config: PassiveModeConfig<Ctx, Events, Deps> = {
             on: {
                 MESSAGE: {
                     target: "next",
@@ -122,7 +122,7 @@ describe("`deps` threading in callback envelopes", () => {
                 },
             },
         };
-        expectTypeOf(config).toMatchTypeOf<PassiveLeafModeConfig<Ctx, Events, Deps>>();
+        expectTypeOf(config).toMatchTypeOf<PassiveModeConfig<Ctx, Events, Deps>>();
     });
 
     test("`EventTransition.guard` parameter type compiles equivalently across signature shapes", () => {

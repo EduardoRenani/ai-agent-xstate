@@ -1,4 +1,4 @@
-// Lower a passive `LeafModeConfig` to an XState atomic-state config.
+// Lower a passive `ModeConfig` to an XState atomic-state config.
 // Spec: docs/specs/004-tasks.md Phase 5.4 + docs/specs/004-xstate-agent-wrapper.md §Mapping.
 // Spec 005: `on[*].guard` gains a `deps` parameter; the wrapper captures the
 // agent's frozen `deps` reference in the generated guard's closure.
@@ -17,7 +17,7 @@ import { liftGuard, type LiftContext } from "./contextLift.ts";
 import type {
     EventTransition,
     JsonObject,
-    PassiveLeafModeConfig,
+    PassiveModeConfig,
     RouteTarget,
 } from "./types.ts";
 
@@ -27,7 +27,7 @@ type InternalCtx = JsonObject;
 
 // Intermediate, XState-shaped transition. Loose typing on `context` / `event`
 // — the wrapper does not see the user's concrete types at this layer;
-// they were already enforced by the `defineLeafMode` call site.
+// they were already enforced by the `defineMode` call site.
 export type LoweredTransition = {
     target?: RouteTarget;
     actions?: string | readonly string[];
@@ -78,7 +78,7 @@ function mapTransition(
 }
 
 export function buildPassiveState(
-    config: PassiveLeafModeConfig<InternalCtx, { type: string }>,
+    config: PassiveModeConfig<InternalCtx, { type: string }>,
     lift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
 ): LoweredAtomicState {

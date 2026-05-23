@@ -1,4 +1,4 @@
-import { defineLeafMode, END } from "atlas";
+import { defineMode, END } from "atlas";
 import type { ModeOutput } from "atlas";
 
 import { chat } from "../llm-client.js";
@@ -29,7 +29,7 @@ const SYSTEM_PROMPT = [
 type EvalResult = "achieved" | "retry" | "abandoned";
 type EvalPayload = { result: EvalResult };
 
-export const socraticEvaluating = defineLeafMode<AgentContext, AgentEvents, EvalPayload>({
+export const socraticEvaluating = defineMode<AgentContext, AgentEvents, EvalPayload>({
     input: ({ context }) => ({ messages: context.messages }),
     behavior: async ({ input }): Promise<ModeOutput<EvalPayload>> => {
         const { messages } = input as { messages: Message[] };

@@ -9,7 +9,7 @@ import { END, RE_THROW } from "../src/types.ts";
 
 // Minimal carrier builders. Validation cares about the runtime shape only —
 // `__kind` discriminator + the relevant config fields. Bypassing
-// `defineLeafMode` / `defineMode` here keeps the tests focused on the
+// `defineMode` / `defineCompoundMode` here keeps the tests focused on the
 // validator and avoids dragging in TypeScript brand machinery.
 
 function activeLeaf(routes: object): { readonly __kind: "leaf"; readonly config: object } {
@@ -393,7 +393,7 @@ describe("validateTargets() — carrier checks", () => {
             validateTargets({
                 foo: { type: "final" } as unknown,
             }),
-        ).toThrow(/not a LeafMode or Mode/);
+        ).toThrow(/not a Mode or CompoundMode/);
     });
 
     test("rejects unknown carrier kind", () => {

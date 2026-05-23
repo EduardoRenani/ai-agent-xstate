@@ -2,24 +2,25 @@
 //
 // Spec: docs/specs/004-tasks.md Phase 5.1.
 //
-// Enumerates every `LeafMode` and `Mode` slot, recording a root-relative
-// dotted path. The path is used only inside `compile.ts` (for actor naming,
-// for target resolution, for error messages); it is never exposed to users.
+// Enumerates every `Mode` (leaf) and `CompoundMode` slot, recording a
+// root-relative dotted path. The path is used only inside `compile.ts` (for
+// actor naming, for target resolution, for error messages); it is never
+// exposed to users.
 
-import type { JsonObject, LeafModeConfig } from "./types.ts";
+import type { JsonObject, ModeConfig } from "./types.ts";
 
 // Internal pass-through placeholder for TContext at this layer. The user's
-// concrete TContext was enforced by the `defineLeafMode` call site; here we
+// concrete TContext was enforced by the `defineMode` call site; here we
 // only need a JSON-shaped anchor so the alias references compile.
 type InternalCtx = JsonObject;
 
-// Internal carrier shapes. Mirrored from `defineLeafMode.ts` /
-// `defineMode.ts`. Repeated here (not imported) so the constructor modules
-// remain the sole owners of the brand-minting cast — `walk.ts` only reads
-// the runtime shape.
+// Internal carrier shapes. Mirrored from `defineMode.ts` /
+// `defineCompoundMode.ts`. Repeated here (not imported) so the constructor
+// modules remain the sole owners of the brand-minting cast — `walk.ts` only
+// reads the runtime shape.
 type LeafCarrier = {
     readonly __kind: "leaf";
-    readonly config: LeafModeConfig<InternalCtx, { type: string }, unknown>;
+    readonly config: ModeConfig<InternalCtx, { type: string }, unknown>;
 };
 type CompoundCarrier = {
     readonly __kind: "compound";
@@ -29,7 +30,7 @@ type CompoundCarrier = {
 export type LeafSlot = {
     readonly kind: "leaf";
     readonly path: string;
-    readonly config: LeafModeConfig<InternalCtx, { type: string }, unknown>;
+    readonly config: ModeConfig<InternalCtx, { type: string }, unknown>;
 };
 
 export type CompoundSlot = {
@@ -43,8 +44,8 @@ export type Slot = LeafSlot | CompoundSlot;
 function asCarrier(value: unknown, path: string): LeafCarrier | CompoundCarrier {
     if (typeof value !== "object" || value === null || !("__kind" in value)) {
         throw new Error(
-            `atlas/walk: state at "${path}" is not a LeafMode or Mode. ` +
-                `Pass values constructed via defineLeafMode() or defineMode().`,
+            `atlas/walk: state at "${path}" is not a Mode or CompoundMode. ` +
+                `Pass values constructed via defineMode() or defineCompoundMode().`,
         );
     }
     const kind = (value as { __kind: unknown }).__kind;

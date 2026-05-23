@@ -25,10 +25,10 @@ import type { AgentConfig, ModesMap } from "./types.ts";
  * touches `xstate`: the return type is `AnyStateMachine`, so callers feed it
  * straight into `createActor`, the inspector, and existing tests.
  *
- * The agent's `modes` map can mix `LeafMode`s and nested `Mode`s freely. The
- * compile step lowers them, validates sibling-target references, injects the
- * `END` synthetic state per-compound when referenced, and wires the
- * payload-driven `routes` into XState transitions.
+ * The agent's `modes` map can mix `Mode`s (leaves) and nested `CompoundMode`s
+ * freely. The compile step lowers them, validates sibling-target references,
+ * injects the `END` synthetic state per-compound when referenced, and wires
+ * the payload-driven `routes` into XState transitions.
  *
  * @template TContext  The agent's root context shape. Constrained to
  *                     `JsonCompatible<TContext>` so the snapshot round-trips

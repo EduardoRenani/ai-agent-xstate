@@ -9,8 +9,8 @@ import { createActor } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
-import { defineLeafMode } from "../src/defineLeafMode.ts";
 import { defineMode } from "../src/defineMode.ts";
+import { defineCompoundMode } from "../src/defineCompoundMode.ts";
 import type { ModeOutput } from "../src/types.ts";
 
 type Events = { type: "ADVANCE" } | { type: "MESSAGE"; text: string };
@@ -20,7 +20,7 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
         type Ctx = { messages: readonly string[]; count: number };
         type Deps = { tag: string };
 
-        const probe = defineLeafMode<Ctx, Events, undefined, Deps>({
+        const probe = defineMode<Ctx, Events, undefined, Deps>({
             input: ({ context }) => context.messages,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -36,7 +36,7 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
                 abandoned: { target: "done" },
             },
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, Deps>({
             id: "json",
@@ -63,7 +63,7 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
     test("optional `undefined` field round-trips through `JSON.stringify` (key dropped)", async () => {
         type Ctx = { a: number; b?: string };
 
-        const probe = defineLeafMode<Ctx, Events, undefined>({
+        const probe = defineMode<Ctx, Events, undefined>({
             input: () => null,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -73,7 +73,7 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
                 abandoned: { target: "done" },
             },
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }>({
             id: "json-undef",
@@ -109,7 +109,7 @@ describe("synthetic compound-local slot persistence", () => {
         type RootCtx = { messages: readonly string[] };
         type ChildCtx = { messages: readonly string[]; attempts: number };
 
-        const innerBump = defineLeafMode<ChildCtx, Events, undefined>({
+        const innerBump = defineMode<ChildCtx, Events, undefined>({
             input: ({ context }) => context.attempts,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -122,7 +122,7 @@ describe("synthetic compound-local slot persistence", () => {
                 abandoned: { target: "settled" },
             },
         });
-        const innerSettled = defineLeafMode<ChildCtx, Events, undefined>({
+        const innerSettled = defineMode<ChildCtx, Events, undefined>({
             input: () => null,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -133,7 +133,7 @@ describe("synthetic compound-local slot persistence", () => {
             },
         });
 
-        const inner = defineMode<RootCtx, Events,
+        const inner = defineCompoundMode<RootCtx, Events,
             { inherit: readonly ["messages"]; local: { attempts: number } },
             { bump: typeof innerBump; settled: typeof innerSettled }
         >({
@@ -142,7 +142,7 @@ describe("synthetic compound-local slot persistence", () => {
             modes: { bump: innerBump, settled: innerSettled },
             onDone: "idle",
         });
-        const idle = defineLeafMode<RootCtx, Events>({ on: {} });
+        const idle = defineMode<RootCtx, Events>({ on: {} });
 
         const machine = defineAgent<RootCtx, Events, { inner: typeof inner; idle: typeof idle }>({
             id: "slot-outside",
@@ -182,7 +182,7 @@ describe("`when` predicates still route correctly after spec 005 changes", () =>
         type Ctx = { last: string };
         type P = { tag: "x" | "y" };
 
-        const probe = defineLeafMode<Ctx, Events, P>({
+        const probe = defineMode<Ctx, Events, P>({
             input: () => null,
             behavior: async () =>
                 ({ outcome: "achieved", payload: { tag: "y" } } satisfies ModeOutput<P>),
@@ -202,8 +202,8 @@ describe("`when` predicates still route correctly after spec 005 changes", () =>
                 abandoned: { target: "yLanding" },
             },
         });
-        const xLanding = defineLeafMode<Ctx, Events>({ on: {} });
-        const yLanding = defineLeafMode<Ctx, Events>({ on: {} });
+        const xLanding = defineMode<Ctx, Events>({ on: {} });
+        const yLanding = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, {
             probe: typeof probe;

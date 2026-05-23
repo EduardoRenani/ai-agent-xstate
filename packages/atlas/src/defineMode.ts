@@ -1,127 +1,124 @@
-// `defineMode` — constructs a compound mode (a state with substates).
+// `defineMode` — constructs a leaf agent Mode (active or passive variant).
 //
 // Spec: docs/specs/004-xstate-agent-wrapper.md §`defineMode`
-//        + docs/specs/005-agent-deps-and-stringifiable-context.md §`defineMode`.
+//        + docs/specs/005-agent-deps-and-stringifiable-context.md §`defineMode`
+//        + docs/specs/006-modes-not-states.md §"Refined vocabulary"
 //
-// Like `defineLeafMode`, this is a thin Phase 3 shell. The generics enforce
-// the compound-local context narrowing at the call site: children's
-// `TContext` is `LocalContextOf<TParentContext, TCtx>`. The compile step in
-// `compile.ts` lowers the carrier to XState states later.
+// Phase 3 (these constructors) is a thin shell: it stores the user's config
+// plus a runtime `__kind` tag behind the opaque `Mode` brand. The actual
+// XState lowering happens in `compile.ts` (Phase 5) and is reached only via
+// `defineAgent`. Users never inspect the returned object.
 //
-// `TDeps` is threaded through to the returned `Mode` brand via its
-// contravariant `__phantomDeps` field. See spec 005 §`defineMode` for the
-// manual-threading rationale: TypeScript cannot infer the agent's `TDeps`
-// from a sub-mode definition site (modes are typically declared in separate
-// files and only referenced from `defineAgent.modes`), so each `defineMode`
-// invocation declares its own `TDeps` generic explicitly.
+// The `TDeps` generic flows through to the brand via `__phantomDeps`, which
+// puts it in function-argument position — making `Mode` contravariant in
+// `TDeps`. That gives the slot-time variance check in `defineAgent.modes`
+// the right direction structurally: a `Mode` demanding `{ db }` slots into
+// agents whose deps include at least `db`.
 
-import type {
-    CompoundContext,
-    LocalContextOf,
-    Mode,
-    ModeConfig,
-    ModesMap,
-} from "./types.ts";
+import type { Mode, ModeConfig } from "./types.ts";
 
 /**
- * Runtime carrier behind the opaque `Mode` brand. Internal — accessed only
- * by `compile.ts` via the `__kind` discriminant.
+ * Runtime carrier behind the opaque `Mode` brand. Internal — accessed
+ * only by `compile.ts` via the `__kind` discriminant. User code never sees
+ * this shape because `defineMode` returns the branded type.
  *
- * `config` is stored as `unknown` on purpose: the original generic narrowing
- * has already done its job at the call site, and `compile.ts` walks the tree
- * structurally rather than relying on the generic parameters.
- *
- * @template TParentContext  Context shape the parent scope provides.
- * @template TEvents         The agent's full event union.
- * @template TDeps           Frozen deps container this compound demands.
+ * @template TContext  Context shape this Mode reads/writes.
+ * @template TEvents   The agent's full event union (each variant has a `type`).
+ * @template TPayload  Payload shape carried by `ModeOutput<TPayload>`.
+ * @template TDeps     Frozen deps container this Mode demands.
  */
 export type ModeCarrier<
-    TParentContext,
+    TContext,
     TEvents extends { type: string },
+    TPayload,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > = {
-    readonly __kind: "compound";
-    readonly config: unknown;
+    readonly __kind: "leaf";
+    readonly config: ModeConfig<TContext, TEvents, TPayload, TDeps>;
 };
 
 /**
- * Construct a **compound mode** — a state that contains sub-states. Use this
- * to group related leaves under a shared lifecycle, optionally narrowing the
- * context children see via `context: { inherit, local }`.
+ * Construct a **leaf Mode** — one node in the agent's state tree with no
+ * sub-Modes. Modes come in two structural flavors:
  *
- * Children's effective context is `LocalContextOf<TParentContext, TCtx>`:
- * - With `context` supplied: `Pick<TParentContext, inherit[number]> & typeof local`.
- *   Inherited keys are live-mirrored; locals are reset on every entry.
- * - Without `context`: children see the full `TParentContext`.
+ * - **Active** (`{ input, behavior, routes }`) — runs an async `behavior` and
+ *   dispatches on its `ModeOutput`. Use for LLM calls, tool execution,
+ *   classifiers — anything that does work and then decides where to go next.
  *
- * Children route out of the compound via `END` (defined in `./types.ts`); the
- * compound's `onDone` then fires the parent-level transition.
+ * - **Passive** (`{ on }`) — waits for an external event. Use for listening
+ *   states or user-input gates.
  *
- * @template TParentContext  The context the enclosing scope provides to this
- *                           compound. Constrained to
- *                           `JsonCompatible<TParentContext>`.
- * @template TEvents         The agent's full event union (each variant has a
- *                           `type` discriminant).
- * @template TCtx            Either `undefined` (no narrowing — children see
- *                           `TParentContext`) or a `CompoundContext` literal
- *                           declaring which keys to `inherit` and which `local`
- *                           variables to declare. The `local` shape must
- *                           satisfy `JsonCompatible<TLocal>` (enforced at the
- *                           `CompoundContext` alias level).
- * @template TModes          The compound's `modes` map. Each slot is a
- *                           `LeafMode` or nested `Mode` typed against the
- *                           compound-local context view.
- * @template TDeps           Frozen deps this compound passes to its children.
- *                           Must match the agent's `TDeps` at the slot site
- *                           (spec 005 §`defineMode` "Manual threading").
+ * The two variants are mutually exclusive at the type level: mixing `behavior`
+ * and `on` is a compile error.
  *
- * @param config  `{ context?, initial, modes, onDone }`. `initial` is keyed
- *                against `TModes` so a typo is a compile error. `onDone`
- *                accepts a sibling name or `END` (when nested further).
+ * @template TContext  Shape of the context this Mode observes. Constrained to
+ *                     `JsonCompatible<TContext>`. At the agent's top level,
+ *                     this is the agent's full context. Inside a
+ *                     `defineCompoundMode` with a narrowing `context`, this is
+ *                     the compound-local view: inherited keys + declared locals.
+ * @template TEvents   The agent's full event union. Each variant must have a
+ *                     `type: string` discriminant. Passive `on` handlers are
+ *                     typed against this union via `Extract<TEvents, { type: K }>`.
+ * @template TPayload  Payload type carried on a successful `behavior` return
+ *                     (`ModeOutput<TPayload>`). Flows into `routes.*.when` and
+ *                     `routes.*.assign` for payload-driven dispatch. Defaults
+ *                     to `unknown` (relevant only for passive Modes, which
+ *                     never produce a payload).
+ * @template TDeps     Frozen deps this Mode wants to see. Defaults to
+ *                     `Record<string, never>` — a Mode with the default
+ *                     slots into any agent. A Mode that declares
+ *                     `<…, { db: Driver }>` can only slot into agents whose
+ *                     `defineAgent.deps` provides at least `db`.
  *
- * @returns An opaque `Mode` brand. Only `defineMode` / `defineAgent` accept it
- *          as a `modes` slot.
+ * @param config  An `ActiveModeConfig` or a `PassiveModeConfig`. The
+ *                discriminator is structural — TypeScript picks the variant
+ *                from which keys are present.
  *
- * @example Compound with context narrowing — children see only `messages`.
+ * @returns An opaque `Mode` brand. User code cannot inspect it; only
+ *          `defineCompoundMode` and `defineAgent` accept it as a `modes` slot.
+ *
+ * @example Active Mode — classify an intent and route on the payload.
  * ```ts
- * const socratic = defineMode<AgentCtx, Ev, {
- *     inherit: ["messages"];
- *     local: { attempts: number };
- * }, {
- *     thinking: LeafMode<{ messages: Msg[]; attempts: number }, Ev>;
- *     evaluating: LeafMode<{ messages: Msg[]; attempts: number }, Ev, EvalPayload>;
- * }, AgentDeps>({
- *     context: { inherit: ["messages"] as const, local: { attempts: 0 } },
- *     initial: "thinking",
- *     modes: { thinking, evaluating },
- *     onDone: "listening",
+ * const classifying = defineMode<Ctx, Ev, { intent: "greet" | "learn" }>({
+ *     input: ({ context, deps }) => ({ messages: context.messages }),
+ *     behavior: async ({ input, deps }) => {
+ *         const intent = await deps.llm.classify(input);
+ *         return { outcome: "achieved", payload: { intent } };
+ *     },
+ *     routes: {
+ *         achieved: [
+ *             { when: (p) => p.intent === "greet", target: "greetings" },
+ *             { target: "socratic" },
+ *         ],
+ *         retry: [],
+ *         abandoned: { target: END },
+ *     },
+ * });
+ * ```
+ *
+ * @example Passive Mode — park here until a `USER_MSG` event arrives.
+ * ```ts
+ * const listening = defineMode<Ctx, Ev>({
+ *     on: {
+ *         USER_MSG: { target: "classifying", actions: "appendUserMsg" },
+ *     },
  * });
  * ```
  */
 export function defineMode<
-    TParentContext,
+    TContext,
     TEvents extends { type: string },
-    TCtx extends
-        | CompoundContext<
-            TParentContext,
-            ReadonlyArray<keyof TParentContext & string>,
-            // The alias-level `JsonCompatible<TLocal>` bound does the
-            // real serializability check against the user's concrete shape
-            // (e.g. `{ attempts: number }`). Here we only need a structural
-            // upper bound — `object` admits the user's literal shape while
-            // satisfying the alias's `TLocal extends JsonCompatible<TLocal>`
-            // constraint (`JsonCompatible<object>` reduces to `{}`).
-            object
-        >
-        | undefined,
-    TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents, TDeps>,
+    TPayload = unknown,
     TDeps extends Record<string, unknown> = Record<string, never>,
 >(
-    config: ModeConfig<TParentContext, TEvents, TCtx, TModes, TDeps>,
-): Mode<TParentContext, TEvents, TDeps> {
-    const carrier: ModeCarrier<TParentContext, TEvents, TDeps> = {
-        __kind: "compound",
+    config: ModeConfig<TContext, TEvents, TPayload, TDeps>,
+): Mode<TContext, TEvents, TPayload, TDeps> {
+    const carrier: ModeCarrier<TContext, TEvents, TPayload, TDeps> = {
+        __kind: "leaf",
         config,
     };
-    return carrier as unknown as Mode<TParentContext, TEvents, TDeps>;
+    // The brand is a phantom — at runtime the object is just the carrier.
+    // The cast is the single boundary where the opaque type is minted; user
+    // code can only obtain `Mode` values through this function.
+    return carrier as unknown as Mode<TContext, TEvents, TPayload, TDeps>;
 }

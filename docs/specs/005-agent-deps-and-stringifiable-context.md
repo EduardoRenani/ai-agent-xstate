@@ -11,7 +11,7 @@ Two coupled additions to the `atlas` wrapper, both extending the public API with
 1. **Constrain** `TContext` at the type level to a JSON-serializable shape (`JsonObject`), so any agent context can round-trip through arbitrary storage (file, KV, blob, message broker) without the wrapper or the consumer doing custom encoding.
 2. **Add** `AgentDeps` — a typed, immutable dependency container declared on `defineAgent` and threaded through every user callback that mutates or reads context. Provides access to external resources (DB driver, logger, LLM client) without module-global coupling. Optional field with a typed empty default.
 
-After this spec, the wrapper's three constructors carry an extra `TDeps` generic: `<TContext, TEvents, TModes, TDeps>` on `defineAgent`, `<TContext, TEvents, TPayload, TDeps>` on `defineLeafMode`, `<TParentContext, TEvents, TCtx, TModes, TDeps>` on `defineMode`. All existing names — `AgentContext`, `TContext`, `TParentContext`, `CompoundContext`, `LocalContextOf`, the `context` field on `AgentConfig` / `ModeConfig` — are preserved.
+After this spec, the wrapper's three constructors carry an extra `TDeps` generic: `<TContext, TEvents, TModes, TDeps>` on `defineAgent`, `<TContext, TEvents, TPayload, TDeps>` on `defineMode`, `<TParentContext, TEvents, TCtx, TModes, TDeps>` on `defineCompoundMode`. All existing names — `AgentContext`, `TContext`, `TParentContext`, `CompoundContext`, `LocalContextOf`, the `context` field on `AgentConfig` / `CompoundModeConfig` — are preserved.
 
 ## Problems Addressed
 
@@ -75,7 +75,7 @@ A note on the root: `JSON.stringify(undefined) === undefined` (not the string `"
 
 The exported `JsonObject` / `JsonValue` / `JsonPrimitive` / `JsonArray` stay available as building blocks for users who *want* an open index-signature shape inside their context (e.g. `meta: JsonObject` for arbitrary serializable telemetry, or `Record<string, JsonValue>` for a discriminated bag).
 
-`TPayload` (on `defineLeafMode`) is **not** constrained to `JsonValue`. Reason: the payload is the actor's return value, not context. It only enters context through `routes[*].assign`, whose return type is `Partial<TContext>` — already constrained. Constraining `TPayload` would force discriminated-union payloads (which sometimes carry `Error` instances or other non-JSON values used by `when` predicates) through unnecessary widening.
+`TPayload` (on `defineMode`) is **not** constrained to `JsonValue`. Reason: the payload is the actor's return value, not context. It only enters context through `routes[*].assign`, whose return type is `Partial<TContext>` — already constrained. Constraining `TPayload` would force discriminated-union payloads (which sometimes carry `Error` instances or other non-JSON values used by `when` predicates) through unnecessary widening.
 
 `TEvents` is **not** constrained. Events are transient; only what `actions` / `assign` write to `TContext` is persisted, and that path is already type-checked against `Partial<TContext>`.
 
@@ -118,11 +118,11 @@ export function defineAgent<
 - Type/runtime correspondence for the default: `Record<string, never>` makes every property access (`deps.foo`) a compile error (any value type resolves to `never`); the runtime value is `Object.freeze({})`. In normal use these never disagree — TypeScript rejects the access before the runtime value is ever consulted. The two facets are calibrations of the same "no deps" contract, not independent layers.
 - `deps` is **immutable after the `defineAgent` call returns** at the container level (see §Imutabilidade).
 
-### `defineLeafMode` — new TDeps generic + deps in callbacks
+### `defineMode` — new TDeps generic + deps in callbacks
 
 ```ts
 // Active form
-export type ActiveLeafModeConfig<
+export type ActiveModeConfig<
     TContext extends JsonCompatible<TContext>,
     TEvents extends { type: string },
     TPayload,
@@ -134,7 +134,7 @@ export type ActiveLeafModeConfig<
 };
 
 // Passive form
-export type PassiveLeafModeConfig<
+export type PassiveModeConfig<
     TContext extends JsonCompatible<TContext>,
     TEvents extends { type: string },
     TDeps extends Record<string, unknown>,
@@ -142,70 +142,70 @@ export type PassiveLeafModeConfig<
     on: EventHandlers<TContext, TEvents, TDeps>;
 };
 
-export function defineLeafMode<
+export function defineMode<
     TContext extends JsonCompatible<TContext>,
     TEvents extends { type: string },
     TPayload = unknown,
     TDeps extends Record<string, unknown> = Record<string, never>,
 >(
-    config: LeafModeConfig<TContext, TEvents, TPayload, TDeps>,
-): LeafMode<TContext, TEvents, TPayload, TDeps>;
+    config: ModeConfig<TContext, TEvents, TPayload, TDeps>,
+): Mode<TContext, TEvents, TPayload, TDeps>;
 ```
 
-A `LeafMode` carries `TDeps` (on its phantom brand) so that, at slot time inside `defineAgent.modes`, the wrapper can enforce that every mode's `TDeps` is assignable from the agent's `TDeps`. A mode that declares `<C, E, P, { db: Driver }>` cannot be slotted into an agent whose deps lack `db` — the slot is a compile error, not a runtime crash on first call.
+A `Mode` carries `TDeps` (on its phantom brand) so that, at slot time inside `defineAgent.modes`, the wrapper can enforce that every mode's `TDeps` is assignable from the agent's `TDeps`. A mode that declares `<C, E, P, { db: Driver }>` cannot be slotted into an agent whose deps lack `db` — the slot is a compile error, not a runtime crash on first call.
 
-**Variance — modes ask for less, agents provide more.** The slot-time check is structural: a `LeafMode<C, E, P, TModeDeps>` fits an agent with `TAgentDeps` when `TAgentDeps` is assignable to `TModeDeps` (i.e. `TAgentDeps` has at least every key in `TModeDeps`, with matching value types). A mode declaring `{ db: Driver }` slots into agents with `{ db, logger }`, `{ db, logger, flags }`, etc., but not into an agent with just `{ logger }`. A mode declaring `Record<string, never>` (the default when `TDeps` is omitted) slots anywhere.
+**Variance — modes ask for less, agents provide more.** The slot-time check is structural: a `Mode<C, E, P, TModeDeps>` fits an agent with `TAgentDeps` when `TAgentDeps` is assignable to `TModeDeps` (i.e. `TAgentDeps` has at least every key in `TModeDeps`, with matching value types). A mode declaring `{ db: Driver }` slots into agents with `{ db, logger }`, `{ db, logger, flags }`, etc., but not into an agent with just `{ logger }`. A mode declaring `Record<string, never>` (the default when `TDeps` is omitted) slots anywhere.
 
-This direction (`TAgentDeps` assignable to `TModeDeps`) is the **opposite** of normal field-position variance. The phantom brand on `LeafMode` / `Mode` puts `TDeps` in **function-argument position** so that the brand is contravariant in `TDeps`, which gives the assignability check the right direction at no syntactic cost:
+This direction (`TAgentDeps` assignable to `TModeDeps`) is the **opposite** of normal field-position variance. The phantom brand on `Mode` / `CompoundMode` puts `TDeps` in **function-argument position** so that the brand is contravariant in `TDeps`, which gives the assignability check the right direction at no syntactic cost:
 
 ```ts
-export interface LeafMode<TContext, TEvents, TPayload, TDeps> {
+export interface Mode<TContext, TEvents, TPayload, TDeps> {
     readonly [__leafBrand]: true;
     readonly __phantomLeaf?: { context: TContext; events: TEvents; payload: TPayload };
     readonly __phantomDeps?: (deps: TDeps) => void;     // ← argument position → contravariant
 }
 
-export interface Mode<TContext, TEvents, TDeps> {
+export interface CompoundMode<TContext, TEvents, TDeps> {
     readonly [__modeBrand]: true;
     readonly __phantomMode?: { context: TContext; events: TEvents };
     readonly __phantomDeps?: (deps: TDeps) => void;     // ← same
 }
 ```
 
-`(deps: A) => void` is assignable to `(deps: B) => void` iff `B` is assignable to `A` — TypeScript's standard contravariance for function parameters. Applied to the brand, this means `LeafMode<…, AgentDeps>` is assignable to `LeafMode<…, ModeDeps>` iff `AgentDeps` is assignable to `ModeDeps`, which is exactly "agent provides at least every key the mode asks for". Placing `TDeps` inside the covariant `__phantomLeaf` record (alongside `context` / `events` / `payload`) would invert the rule — modes would have to be subtypes-or-equal of the agent's deps, and the wrong slot pairings would compile. The split brand isolates `TDeps` so the variance direction is independent of the other generics.
+`(deps: A) => void` is assignable to `(deps: B) => void` iff `B` is assignable to `A` — TypeScript's standard contravariance for function parameters. Applied to the brand, this means `Mode<…, AgentDeps>` is assignable to `Mode<…, ModeDeps>` iff `AgentDeps` is assignable to `ModeDeps`, which is exactly "agent provides at least every key the mode asks for". Placing `TDeps` inside the covariant `__phantomLeaf` record (alongside `context` / `events` / `payload`) would invert the rule — modes would have to be subtypes-or-equal of the agent's deps, and the wrong slot pairings would compile. The split brand isolates `TDeps` so the variance direction is independent of the other generics.
 
 The dual error (mode needs `db`, agent doesn't have it) surfaces at `defineAgent.modes.foo = thatMode` rather than at the first runtime call.
 
-### `defineMode` — new TDeps generic
+### `defineCompoundMode` — new TDeps generic
 
 ```ts
-export function defineMode<
+export function defineCompoundMode<
     TParentContext extends JsonCompatible<TParentContext>,
     TEvents extends { type: string },
     TCtx extends CompoundContext<TParentContext, ReadonlyArray<keyof TParentContext & string>, object> | undefined,
     TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents, TDeps>,
     TDeps extends Record<string, unknown> = Record<string, never>,
 >(
-    config: ModeConfig<TParentContext, TEvents, TCtx, TModes>,
-): Mode<TParentContext, TEvents, TDeps>;
+    config: CompoundModeConfig<TParentContext, TEvents, TCtx, TModes>,
+): CompoundMode<TParentContext, TEvents, TDeps>;
 ```
 
-`CompoundContext`'s third generic gains the same self-referential bound: `TLocal extends JsonCompatible<TLocal>` (was `TLocal extends object`). Compound-local context lives inside the persisted root context at runtime — per spec 004's "Lexical scoping" → "wrapper allocates a local slot under a generated context key" — and must therefore satisfy the same serializability constraint as the agent's declared `TContext`. The upper bound at `defineMode`'s `TCtx` position stays `object` (the alias-level `JsonCompatible<TLocal>` constraint does the real checking when the user passes their actual local shape).
+`CompoundContext`'s third generic gains the same self-referential bound: `TLocal extends JsonCompatible<TLocal>` (was `TLocal extends object`). Compound-local context lives inside the persisted root context at runtime — per spec 004's "Lexical scoping" → "wrapper allocates a local slot under a generated context key" — and must therefore satisfy the same serializability constraint as the agent's declared `TContext`. The upper bound at `defineCompoundMode`'s `TCtx` position stays `object` (the alias-level `JsonCompatible<TLocal>` constraint does the real checking when the user passes their actual local shape).
 
-`Mode<TParentContext, TEvents>` (spec 004, two generics) becomes `Mode<TParentContext, TEvents, TDeps>` with the same `__phantomDeps?: (deps: TDeps) => void` contravariant brand as `LeafMode`. `ModesMap<TContext, TEvents>` becomes `ModesMap<TContext, TEvents, TDeps>` and forwards `TDeps` to every slot — so a single `TDeps` flows from `defineAgent` down through every nested compound's slot map without manual threading at the *slot* type level.
+`CompoundMode<TParentContext, TEvents>` (spec 004, two generics) becomes `CompoundMode<TParentContext, TEvents, TDeps>` with the same `__phantomDeps?: (deps: TDeps) => void` contravariant brand as `Mode`. `ModesMap<TContext, TEvents>` becomes `ModesMap<TContext, TEvents, TDeps>` and forwards `TDeps` to every slot — so a single `TDeps` flows from `defineAgent` down through every nested compound's slot map without manual threading at the *slot* type level.
 
-**Manual threading at the `defineMode` *call* level.** Each `defineMode` invocation is independent: TypeScript cannot infer "this sub-mode is being defined for an agent that has `TDeps = { db, logger }`" because the agent does not exist yet at the sub-mode definition site (modes are typically declared in separate files and only referenced from `defineAgent.modes`). A nested compound that uses `deps.db` must declare its own `TDeps` generic explicitly:
+**Manual threading at the `defineCompoundMode` *call* level.** Each `defineCompoundMode` invocation is independent: TypeScript cannot infer "this sub-mode is being defined for an agent that has `TDeps = { db, logger }`" because the agent does not exist yet at the sub-mode definition site (modes are typically declared in separate files and only referenced from `defineAgent.modes`). A nested compound that uses `deps.db` must declare its own `TDeps` generic explicitly:
 
 ```ts
 // states/socratic.ts
 import type { AgentEvents, AgentContext, AgentDeps } from "../types.js";
 
-export const socratic = defineMode<AgentContext, AgentEvents, undefined,
+export const socratic = defineCompoundMode<AgentContext, AgentEvents, undefined,
     { teaching: typeof teaching; listening: typeof listening; evaluating: typeof evaluating },
     AgentDeps>({ /* ... */ });
 ```
 
-The consumer's project conventionally exports an `AgentDeps` type alias (mirroring `AgentContext` / `AgentEvents`) and imports it at every `defineMode` site. A type-level helper that derives `TDeps` from a back-reference to `defineAgent` (e.g. `DepsOf<typeof agent>`) is **out of scope** — it would require either a circular reference between agent and mode files or a builder-pattern API; both trade spec 004's flat call shape for inference convenience.
+The consumer's project conventionally exports an `AgentDeps` type alias (mirroring `AgentContext` / `AgentEvents`) and imports it at every `defineCompoundMode` site. A type-level helper that derives `TDeps` from a back-reference to `defineAgent` (e.g. `DepsOf<typeof agent>`) is **out of scope** — it would require either a circular reference between agent and mode files or a builder-pattern API; both trade spec 004's flat call shape for inference convenience.
 
 ### Routes / EventHandlers — `assign` gets deps, `when` stays deps-free
 
@@ -279,8 +279,8 @@ The wrapper deliberately does not ship `makeAgent` — every consumer's signatur
 
 | Wrapper call site                          | Generated XState shape                                                                          |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `LeafMode.input({ context, deps })`        | `invoke.input = ({ context }) => userInput({ context, deps })` — deps captured in closure       |
-| `LeafMode.behavior({ input, deps })`       | `fromPromise(async ({ input }) => userBehavior({ input, deps }))` — deps captured in closure    |
+| `Mode.input({ context, deps })`        | `invoke.input = ({ context }) => userInput({ context, deps })` — deps captured in closure       |
+| `Mode.behavior({ input, deps })`       | `fromPromise(async ({ input }) => userBehavior({ input, deps }))` — deps captured in closure    |
 | `routes[outcome][i].when(payload)`         | `onDone[i].guard = ({ event }) => userWhen(event.output.payload)` — no deps in closure          |
 | `routes[outcome][i].assign({ ..., deps })` | `onDone[i].actions = assign(({ context, event }) => userAssign({ context, payload: event.output.payload, deps }))` |
 | `routes.error[i].when(error)`              | `onError[i].guard = ({ event }) => userWhen(event.error)` — no deps in closure                  |
@@ -318,10 +318,10 @@ Single PR, three layers in order:
 | `docs/specs/005-agent-deps-and-stringifiable-context.md` | New spec (this document)                                                                     |
 | `docs/specs/README.md`                              | Add row 005, status Draft                                                                         |
 | `docs/design-decisions.md`                          | Add DD recording the JSON constraint, construction-time deps, `when`-stays-deps-free decisions    |
-| `packages/atlas/src/types.ts`                       | Export `JsonValue` / `JsonPrimitive` / `JsonObject` / `JsonArray` / **`JsonCompatible<T>`**. Constrain `TContext extends JsonCompatible<TContext>` on `AgentConfig`, `Routes`, `EventHandlers`, `ExitEntry`, `RetryEntry`, `ErrorEntry`, `EventTransition`, `ActiveLeafModeConfig`, `PassiveLeafModeConfig`, `LeafModeConfig`, `LeafMode`, `Mode`, `ModesMap`, `ModeConfig`. Constrain `CompoundContext.TLocal extends JsonCompatible<TLocal>`. Add a new `TDeps extends Record<string, unknown>` generic (defaulting to `Record<string, never>`) to all the above; make the brand contravariant in `TDeps` so the slot-time variance from §`defineLeafMode` falls out structurally. Thread `deps` into the argument envelopes of `assign` / `input` / `behavior` / `actions[*]` / `guard`. `JsonPrimitive` now includes `undefined` to admit optional fields (`field?: T`). |
+| `packages/atlas/src/types.ts`                       | Export `JsonValue` / `JsonPrimitive` / `JsonObject` / `JsonArray` / **`JsonCompatible<T>`**. Constrain `TContext extends JsonCompatible<TContext>` on `AgentConfig`, `Routes`, `EventHandlers`, `ExitEntry`, `RetryEntry`, `ErrorEntry`, `EventTransition`, `ActiveModeConfig`, `PassiveModeConfig`, `ModeConfig`, `Mode`, `CompoundMode`, `ModesMap`, `CompoundModeConfig`. Constrain `CompoundContext.TLocal extends JsonCompatible<TLocal>`. Add a new `TDeps extends Record<string, unknown>` generic (defaulting to `Record<string, never>`) to all the above; make the brand contravariant in `TDeps` so the slot-time variance from §`defineMode` falls out structurally. Thread `deps` into the argument envelopes of `assign` / `input` / `behavior` / `actions[*]` / `guard`. `JsonPrimitive` now includes `undefined` to admit optional fields (`field?: T`). |
 | `packages/atlas/src/defineAgent.ts`                 | Accept `TDeps`; freeze `deps` (or empty object); pass the frozen reference to `compile`            |
-| `packages/atlas/src/defineLeafMode.ts`              | Accept `TDeps` generic; brand the returned `LeafMode` with it                                     |
-| `packages/atlas/src/defineMode.ts`                  | Accept `TDeps` generic; brand the returned `Mode` with it                                         |
+| `packages/atlas/src/defineMode.ts`              | Accept `TDeps` generic; brand the returned `Mode` with it                                     |
+| `packages/atlas/src/defineCompoundMode.ts`                  | Accept `TDeps` generic; brand the returned `CompoundMode` with it                                         |
 | `packages/atlas/src/compile.ts`                     | Accept `deps` as parameter; thread to `buildActiveState` / `buildPassiveState` / `buildActions`; inject into generated callbacks (input, behavior, routes.*.assign, on.*, actions). `when` predicates remain unchanged (no deps). |
 | `packages/atlas/src/buildActions.ts`                | Pass `deps` to user action callbacks                                                              |
 | `packages/atlas/src/buildActiveState.ts`            | Inject `deps` into `input`, `behavior`, `routes.*.assign`                                          |
@@ -346,14 +346,14 @@ Type-only tests (Vitest `--typecheck`, `.test-d.ts`):
 - `TContext` admits `undefined` at the leaves:
   - `defineAgent<{ messages: Message[]; lastReply?: Message }, ...>(...)` compiles. `lastReply` resolves to `Message | undefined`; both branches are valid `JsonCompatible`.
   - Round-trip semantics are asserted at runtime (see below): `parse(stringify({ lastReply: undefined }))` is structurally `{}`, not `{ lastReply: undefined }`. The wrapper's contract is structural compatibility, not reference equality.
-- `TPayload` is unconstrained: a `defineLeafMode<C, E, { err: Error }>` compiles. The resulting `routes.achieved.assign` only fails if it tries to write the Error into `C` directly.
+- `TPayload` is unconstrained: a `defineMode<C, E, { err: Error }>` compiles. The resulting `routes.achieved.assign` only fails if it tries to write the Error into `C` directly.
 - `TDeps` defaults to `Record<string, never>` when omitted: `defineAgent({ ... no deps ... })` compiles; user callbacks see `deps` typed as the empty object.
 - `TDeps` variance at slot time:
-  - Mode with `<C, E, P, { db: Driver }>` slotted into agent with `deps: { db, logger }` compiles (agent provides at least the keys the mode asks for).
+  - CompoundMode with `<C, E, P, { db: Driver }>` slotted into agent with `deps: { db, logger }` compiles (agent provides at least the keys the mode asks for).
   - Same mode slotted into agent with `deps: { logger }` (missing `db`) is a compile error at `defineAgent.modes.foo = thatMode`.
-  - Mode with default `Record<string, never>` slots into any agent.
-  - **Same-key, incompatible value type**: mode declares `<C, E, P, { db: PgDriver }>`; agent provides `deps: { db: SqliteDriver }` (where `SqliteDriver` is not assignable to `PgDriver`). Compile error at the slot — confirms the assignability check is structural by value type, not nominal by key. Pairs with the contravariant brand from §`defineLeafMode`.
-- Compound `local` carries `JsonCompatible<TLocal>`: `defineMode({ context: { inherit: [...], local: { d: new Date() } } })` is a compile error. `local: { attempts: 0 }` compiles; `local: { cursor?: string }` compiles (undefined admitted).
+  - CompoundMode with default `Record<string, never>` slots into any agent.
+  - **Same-key, incompatible value type**: mode declares `<C, E, P, { db: PgDriver }>`; agent provides `deps: { db: SqliteDriver }` (where `SqliteDriver` is not assignable to `PgDriver`). Compile error at the slot — confirms the assignability check is structural by value type, not nominal by key. Pairs with the contravariant brand from §`defineMode`.
+- Compound `local` carries `JsonCompatible<TLocal>`: `defineCompoundMode({ context: { inherit: [...], local: { d: new Date() } } })` is a compile error. `local: { attempts: 0 }` compiles; `local: { cursor?: string }` compiles (undefined admitted).
 - `routes[*].when` keeps the bare-value signature `(payload) => boolean` / `(error) => boolean`. A user trying to declare `({ payload, deps }) => boolean` is a compile error (parameter shape mismatch).
 - `routes[*].assign`, `input`, `behavior`, `actions`, and `EventTransition.guard` callbacks see `deps: TDeps` in their argument envelope. Omitting `deps` from the destructuring is fine (it's just an unused property); referencing a key absent from `TDeps` is a compile error.
 

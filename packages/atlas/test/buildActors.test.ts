@@ -6,19 +6,19 @@ import { createActor } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { buildActors } from "../src/buildActors.ts";
-import { defineLeafMode } from "../src/defineLeafMode.ts";
 import { defineMode } from "../src/defineMode.ts";
-import type { Mode, ModeOutput } from "../src/types.ts";
+import { defineCompoundMode } from "../src/defineCompoundMode.ts";
+import type { CompoundMode, ModeOutput } from "../src/types.ts";
 import { walk } from "../src/walk.ts";
 
 type Ctx = { messages: readonly string[] };
 type Events = { type: "MESSAGE"; text: string };
 
-const rootListening = defineLeafMode<Ctx, Events>({
+const rootListening = defineMode<Ctx, Events>({
     on: { MESSAGE: { target: "classifying" } },
 });
 
-const classifying = defineLeafMode<Ctx, Events, { intent: "greeting" }>({
+const classifying = defineMode<Ctx, Events, { intent: "greeting" }>({
     input: ({ context }) => context.messages,
     behavior: async () => ({
         outcome: "achieved",
@@ -31,7 +31,7 @@ const classifying = defineLeafMode<Ctx, Events, { intent: "greeting" }>({
     },
 });
 
-const greetingsThinking = defineLeafMode<Ctx, Events, undefined>({
+const greetingsThinking = defineMode<Ctx, Events, undefined>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -41,13 +41,13 @@ const greetingsThinking = defineLeafMode<Ctx, Events, undefined>({
     },
 });
 
-const greetings: Mode<Ctx, Events> = defineMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
+const greetings: CompoundMode<Ctx, Events> = defineCompoundMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
     initial: "thinking",
     modes: { thinking: greetingsThinking },
     onDone: "listening",
 });
 
-const socraticTeaching = defineLeafMode<Ctx, Events, undefined>({
+const socraticTeaching = defineMode<Ctx, Events, undefined>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -57,11 +57,11 @@ const socraticTeaching = defineLeafMode<Ctx, Events, undefined>({
     },
 });
 
-const socraticListening = defineLeafMode<Ctx, Events>({
+const socraticListening = defineMode<Ctx, Events>({
     on: { MESSAGE: { target: "evaluating" } },
 });
 
-const socraticEvaluating = defineLeafMode<Ctx, Events, undefined>({
+const socraticEvaluating = defineMode<Ctx, Events, undefined>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -71,7 +71,7 @@ const socraticEvaluating = defineLeafMode<Ctx, Events, undefined>({
     },
 });
 
-const socratic: Mode<Ctx, Events> = defineMode<
+const socratic: CompoundMode<Ctx, Events> = defineCompoundMode<
     Ctx,
     Events,
     undefined,
