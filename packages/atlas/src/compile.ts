@@ -2,6 +2,10 @@
 //
 // Spec: docs/specs/004-xstate-agent-wrapper.md §"Wrapper internals (compile.ts)"
 // + §Mapping. Tasks: docs/specs/004-tasks.md Phase 5.16 (final emit).
+// Spec 005: closes over a frozen `deps` reference and threads it to every
+//           build* helper. `deps` is NOT placed in XState context — it lives
+//           in callback closures, so `JSON.stringify(actor.getSnapshot().context)`
+//           returns only TContext (+ synthetic compound-local slots).
 //
 // This is the only file in `atlas` that calls `setup().createMachine`. It
 // composes the toolkit slices built in 5.1–5.15:
@@ -35,10 +39,11 @@ import {
 import { END } from "./types.ts";
 import type {
     AgentConfig,
-    LeafModeConfig,
-    PassiveLeafModeConfig,
+    JsonObject,
+    ModeConfig,
+    ModesMap,
+    PassiveModeConfig,
     RouteTarget,
-    StatesMap,
 } from "./types.ts";
 import { validateRoutes } from "./validateRoutes.ts";
 import { validateTargets } from "./validateTargets.ts";
@@ -63,18 +68,26 @@ type LoweredState = LoweredLeafState | LoweredCompoundState | LoweredFinalState;
 // ── Carrier shapes (runtime discriminator) ───────────────────────────
 //
 // Re-declared as loose runtime shapes — the user's generic types have done
-// their job at the call site (defineLeafMode / defineMode). The walk layer
-// only reads the runtime payload.
+// their job at the call site (defineMode / defineCompoundMode). The walk
+// layer only reads the runtime payload.
+
+// The internal "loose" placeholder for TContext at the carrier layer. The
+// type system has already enforced `JsonCompatible<TContext>` at the user's
+// `defineMode` / `defineCompoundMode` / `defineAgent` call site; here we only
+// need a structural pass-through that itself satisfies the JSON constraint
+// so the alias references compile. `JsonObject` is a self-referential JSON
+// shape (its value type is `JsonValue`), which is the loosest such anchor.
+type InternalCtx = JsonObject;
 
 type LeafCarrier = {
     readonly __kind: "leaf";
-    readonly config: LeafModeConfig<unknown, { type: string }, unknown>;
+    readonly config: ModeConfig<InternalCtx, { type: string }, unknown>;
 };
 type CompoundCarrier = {
     readonly __kind: "compound";
     readonly config: {
         readonly initial: string;
-        readonly states: Record<string, unknown>;
+        readonly modes: Record<string, unknown>;
         readonly onDone: RouteTarget;
         readonly context?: {
             readonly inherit: readonly string[];
@@ -137,20 +150,21 @@ function injectEndAtLevel(
     return rewritten;
 }
 
-// ── Recursive state-map lowering ─────────────────────────────────────
+// ── Recursive mode-map lowering ──────────────────────────────────────
 
 function joinPath(parent: string, name: string): string {
     return parent === "" ? name : `${parent}.${name}`;
 }
 
 function buildStatesMap(
-    states: Record<string, unknown>,
+    modes: Record<string, unknown>,
     parentLift: LiftContext | undefined,
     parentPath: string,
+    deps: Readonly<Record<string, unknown>>,
 ): Record<string, LoweredState> {
     const out: Record<string, LoweredState> = {};
 
-    for (const [name, value] of Object.entries(states)) {
+    for (const [name, value] of Object.entries(modes)) {
         const path = joinPath(parentPath, name);
         const carrier = asCarrier(value);
 
@@ -158,11 +172,12 @@ function buildStatesMap(
             const config = carrier.config;
             if ("behavior" in config && config.behavior !== undefined) {
                 const slot: LeafSlot = { kind: "leaf", path, config };
-                out[name] = buildActiveState(slot, parentLift);
+                out[name] = buildActiveState(slot, parentLift, deps);
             } else {
                 out[name] = buildPassiveState(
-                    config as PassiveLeafModeConfig<unknown, { type: string }>,
+                    config as PassiveModeConfig<InternalCtx, { type: string }>,
                     parentLift,
+                    deps,
                 );
             }
             continue;
@@ -188,7 +203,7 @@ function buildStatesMap(
             ownExit = makeCompoundExit(newLift);
         }
 
-        const childStatesRaw = buildStatesMap(cfg.states, childLift, path);
+        const childStatesRaw = buildStatesMap(cfg.modes, childLift, path, deps);
         const childStates = injectEndAtLevel(childStatesRaw);
 
         const compound: LoweredCompoundState = {
@@ -210,25 +225,34 @@ function buildStatesMap(
 export function compile<
     TContext,
     TEvents extends { type: string },
-    TStates extends StatesMap<TContext, TEvents>,
->(config: AgentConfig<TContext, TEvents, TStates>): AnyStateMachine {
-    const rawStates = config.states as Record<string, unknown>;
+    TModes extends ModesMap<TContext, TEvents, TDeps>,
+    TDeps extends Record<string, unknown> = Record<string, never>,
+>(
+    config: AgentConfig<TContext, TEvents, TModes, TDeps>,
+    frozenDeps: Readonly<TDeps>,
+): AnyStateMachine {
+    const rawModes = config.modes as Record<string, unknown>;
+    // Erase TDeps for the loose internal contract — every build* helper takes
+    // `Readonly<Record<string, unknown>>` and the user's concrete type has
+    // already been enforced at the call site.
+    const deps = frozenDeps as Readonly<Record<string, unknown>>;
 
     // Fail-fast at machine creation — spec verification lines 821 + 824.
-    validateTargets(rawStates);
-    validateRoutes(rawStates);
+    validateTargets(rawModes);
+    validateRoutes(rawModes);
 
-    const slots = walk(rawStates);
-    const actors = buildActors(slots);
+    const slots = walk(rawModes);
+    const actors = buildActors(slots, deps);
     const actions = buildActions(
         config.actions as Parameters<typeof buildActions>[0],
+        deps,
     );
 
-    const lowered = buildStatesMap(rawStates, undefined, "");
+    const lowered = buildStatesMap(rawModes, undefined, "", deps);
     const finalStates = injectEndAtLevel(lowered);
 
     // The wrapper's type contract was discharged at the user's call site
-    // (defineLeafMode / defineMode / defineAgent). At this internal layer
+    // (defineMode / defineCompoundMode / defineAgent). At this internal layer
     // every shape is `unknown`-typed by construction. XState's `setup` types
     // are too strict to satisfy generically — its `MachineContext` constraint
     // collides with `TContext` being arbitrary — so we hand it the already-

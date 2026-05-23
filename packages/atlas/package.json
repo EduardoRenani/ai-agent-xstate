@@ -9,7 +9,7 @@
         ".": "./src/index.ts"
     },
     "scripts": {
-        "test": "vitest run --passWithNoTests",
+        "test": "vitest run --passWithNoTests && vitest --typecheck --run --passWithNoTests",
         "test:types": "vitest --typecheck --run --passWithNoTests"
     },
     "peerDependencies": {

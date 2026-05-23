@@ -1,5 +1,5 @@
 // Phase 4 type tests for compound-local context (`CompoundContext` /
-// `LocalContextOf`). Spec §`defineMode` "Lexical scoping" + §"Type contract".
+// `LocalContextOf`). Spec §`defineCompoundMode` "Lexical scoping" + §"Type contract".
 
 import { describe, expectTypeOf, test } from "vitest";
 
@@ -15,7 +15,7 @@ type Parent = {
 };
 
 describe("LocalContextOf — inherit + local", () => {
-    test("a Mode with `inherit: ['messages']` and `local: { count }` exposes only those", () => {
+    test("a CompoundMode with `inherit: ['messages']` and `local: { count }` exposes only those", () => {
         type Ctx = CompoundContext<Parent, readonly ["messages"], { count: number }>;
         type ChildContext = LocalContextOf<Parent, Ctx>;
 

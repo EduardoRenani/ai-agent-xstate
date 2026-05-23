@@ -172,11 +172,11 @@ state → invoke actor → onDone: [
 
 **Date:** 2026-05-20
 
-**Rule:** Agent code expresses its modes through the `atlas` library (`defineLeafMode`, `defineMode`, `defineAgent`) — not through raw XState `setup()` / `createMachine()` / `fromPromise` / `assign` / `onDone` arrays. Importing from `xstate` inside agent source is a wrapper bug, not an escape hatch.
+**Rule:** Agent code expresses its modes through the `atlas` library (`defineMode`, `defineCompoundMode`, `defineAgent`) — not through raw XState `setup()` / `createMachine()` / `fromPromise` / `assign` / `onDone` arrays. Importing from `xstate` inside agent source is a wrapper bug, not an escape hatch.
 
 **Rationale:** Decisions 008-011 codify a recurring shape: each state owns an invoked actor (DD-008), the actor and its prompt live together in a state file (DD-009), the transition after completion is decided by an ordered guard array on `onDone` (DD-010), and side effects are performed inside the actor (DD-011). Expressed in raw XState, that shape forces four separate hand-written pieces per mode — actor registration in `setup({ actors })`, the invoke block, the `onDone` guard array reading `event.output`, and the manual `assign` for context merging — held together by naming convention rather than by the type system. As the agent grows, the boilerplate scales linearly with the mode count and the `event.output` access stays untyped at every site.
 
-The wrapper takes the shape that DD-008-011 already mandate and makes it the only way to express a mode. `defineLeafMode` returns a single object holding `input`, `behavior`, and `routes` (a four-key map: `achieved` / `retry` / `abandoned` / `error`); the wrapper compiles this to the equivalent XState configuration. Actor names are derived from the state path (DD-008 becomes an invariant enforced by the compiler, not a convention enforced by review). The `routes` map closes over a typed `payload`, so `event.output` casts disappear at every call site. Side effects continue to live inside `behavior` (DD-011 unchanged).
+The wrapper takes the shape that DD-008-011 already mandate and makes it the only way to express a mode. `defineMode` returns a single object holding `input`, `behavior`, and `routes` (a four-key map: `achieved` / `retry` / `abandoned` / `error`); the wrapper compiles this to the equivalent XState configuration. Actor names are derived from the state path (DD-008 becomes an invariant enforced by the compiler, not a convention enforced by review). The `routes` map closes over a typed `payload`, so `event.output` casts disappear at every call site. Side effects continue to live inside `behavior` (DD-011 unchanged).
 
 The output of `defineAgent` is a standard XState machine, so `createActor`, the inspector API, and existing tests keep working unchanged. The library is pure compile-time sugar — at runtime there is no extra layer.
 
@@ -247,7 +247,7 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 
 **Date:** 2026-05-20
 
-**Rule:** When a `defineMode` compound declares `context: { inherit, local }`, the compiler allocates a generated key on the agent's flat root context (`__<path>_local`, e.g. `__socratic_local`) holding the `local` shape, emits an `entry` action initializing it from the declared defaults, and emits an `exit` action clearing it. Children inside the compound see a typed view of `Pick<TParent, inherit> & local` in their `input` / `assign` / `when` / `guard` callbacks; the compiler rewrites their reads and writes to hit the lifted slot. Nested compounds chain via a `parent` lift, so an inner write to an outer compound's local key routes to the outer compound's slot, not the agent root.
+**Rule:** When a `defineCompoundMode` compound declares `context: { inherit, local }`, the compiler allocates a generated key on the agent's flat root context (`__<path>_local`, e.g. `__socratic_local`) holding the `local` shape, emits an `entry` action initializing it from the declared defaults, and emits an `exit` action clearing it. Children inside the compound see a typed view of `Pick<TParent, inherit> & local` in their `input` / `assign` / `when` / `guard` callbacks; the compiler rewrites their reads and writes to hit the lifted slot. Nested compounds chain via a `parent` lift, so an inner write to an outer compound's local key routes to the outer compound's slot, not the agent root.
 
 **Rationale:** XState v5 has a single flat context — there is no native per-state context. To honor the wrapper's type contract that gives every compound a logically scoped view, the compiler synthesizes the scope by lifting to a uniquely-named root-context slot. Reads and writes are rewritten at compile time; out-of-scope writes from a child (a write to a parent key that wasn't declared `inherit`) are silently dropped by `splitUserUpdate`, so they cannot reach the actual context. The type system already rejects the same writes at the call site; the runtime drop is belt-and-suspenders against `as Routes<...>` cast bypasses.
 
@@ -255,11 +255,11 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 - **Store per-compound context as a state-tree property:** XState v5 does not support this; reimplementing it would require a parallel state machine, defeating the wrapper's "compile-time sugar" property (DD-012).
 - **Copy inherited keys into the lifted slot on entry and back on exit:** Doubles storage and bookkeeping; copy-back-on-exit conflicts with mid-state writes that need to be visible to siblings outside the compound. Rewriting reads and writes to their authoritative locations avoids the copy entirely.
 
-## 019 — `defineLeafMode` discriminates active vs. passive at the type level
+## 019 — `defineMode` discriminates active vs. passive at the type level
 
 **Date:** 2026-05-20
 
-**Rule:** `LeafModeConfig` is a discriminated union of `ActiveLeafModeConfig` (`input` + `behavior` + `routes`, no `on`) and `PassiveLeafModeConfig` (`on`, no `behavior` / `routes` / `input`). Declaring both shapes on a single `defineLeafMode` call is a compile error.
+**Rule:** `ModeConfig` is a discriminated union of `ActiveModeConfig` (`input` + `behavior` + `routes`, no `on`) and `PassiveModeConfig` (`on`, no `behavior` / `routes` / `input`). Declaring both shapes on a single `defineMode` call is a compile error.
 
 **Rationale:** A leaf that both invokes an actor and handles events at the same time is the confused state where DD-011 (side effects in the actor, not in transitions) and DD-002 (states are agent modes) drift apart — half the behavior is in `behavior`, half in `on` handlers, and the mode-as-a-unit becomes hard to read. If a state genuinely needs both (e.g. perform work, then accept user input), it should be modeled as a compound: an active leaf for the work, a passive sibling for the listening. The type-level rejection forces the modeling choice to be explicit instead of silently merged.
 
@@ -270,3 +270,66 @@ The output of `defineAgent` is a standard XState machine, so `createActor`, the 
 - **Status quo (raw XState).** Forces the DD-008-011 shape to be hand-written and review-policed. Every new mode pays the same boilerplate; every `onDone` entry casts `event.output` to a payload type. The contract is real but invisible to the compiler.
 - **Replace XState entirely.** XState's runtime (inspector, actor model, hierarchical states) is not the problem — the *authoring surface* is. A custom runtime would re-create those concerns from scratch with no offsetting benefit.
 - **Lift only the actor naming (DD-008) into a helper, leave `routes` raw.** Captures one decision out of four. The `event.output` cast survives at every routing site; the contract between `behavior`'s return and the `onDone` guard array stays untyped. Partial solutions in this area have negative ROI — the value comes from closing all four loops at once.
+
+## 020 — Wrapper vocabulary: `modes`, not `states`
+
+**Date:** 2026-05-22
+
+**Rule:** The wrapper's user-facing collection of slots inside a compound or agent is named `modes`. Every surface type (`AgentConfig.modes`, `CompoundModeConfig.modes`, `ModesMap<TContext, TEvents>`, the `TModes` generic on `defineAgent` / `defineCompoundMode`) uses "mode" exclusively. `states` survives only at the XState boundary the wrapper does not own — the `setup().createMachine({ states: ... })` call inside `compile.ts`, `snapshot.value` paths exposed by `createActor`, and other XState-owned surfaces the wrapper explicitly forwards through.
+
+**Rationale:** Ties spec 004 §Verification 5 ("No XState API leakage in user code") to DD-002 ("each state is an agent mode"). The original `states:` field name reintroduced XState's vocabulary at every call site, undermining the mental model the wrapper is supposed to establish: the user authors *modes* (units of agent behavior), and the compiler translates them into XState *states*. Mixing the two terms at the authoring surface forced every reader to context-switch between the wrapper's contract and XState's own. The wrapper still emits `states:` on the XState side because that is XState's API, not the wrapper's — the asymmetry is the point.
+
+**Rejected alternatives:**
+- **Keep `states:` for terminological familiarity with XState users.** Familiarity is the cost, not the benefit: spec 004 §Verification 5 exists specifically to make Zoe (and future consumers) readable without prior XState knowledge. DD-002 already commits to "mode" as the authoring noun; leaving `states:` in the type contract contradicts that commitment at the most visible point of the API.
+- **Expose both `modes:` and `states:` as aliases.** Doubles the surface, invites half-migrations where one file says `modes:` and a sibling says `states:`, and leaves the XState term reachable from user code — the exact leak §Verification 5 forbids.
+
+## 021 — `TContext` is JSON-serializable by type contract
+
+**Date:** 2026-05-22
+
+**Rule:** The user-declared `TContext` (and every compound's `local`) is constrained to `JsonCompatible<T>` at the field position on `AgentConfig.context` and `CompoundContext.local`. Recursively, this admits `string | number | boolean | null | undefined`, readonly arrays and plain objects composed from those, while substituting `never` at any `Date`, `Map`, `Set`, `bigint`, `symbol`, function, or class-with-methods position — which collapses the user's literal into a compile error at exactly the offending field. `TPayload` (returned by `behavior`) stays unconstrained: payloads do not flow into context unless `routes.*.assign` writes them there, and the assign return type is itself a `Partial<TContext>` so the constraint reasserts at the only point where it matters.
+
+**Rationale:** Spec 004 leaves `TContext` open (`AgentConfig<TContext, ...>`), so Zoe's `{ messages: Message[] }` is JSON-safe by accident, not by contract. The moment a future mode adds `lastSeen: Date`, `pendingCalls: Map<string, Promise>`, or a class with methods, the wrapper would silently produce a snapshot that either drops the field (`Map` → `{}`), produces a lossy string (`Date` → ISO string that does not parse back as a `Date`), or throws (cyclic). Persistence-backed flows — the whole reason the wrapper exists as an orchestration layer — would fail at the first checkpoint with a runtime error nobody could prevent at authoring time. The constraint moves the failure to the line that declares the bad field. Applying the constraint at the field position rather than as a generic upper bound (`<TContext extends JsonCompatible<TContext>>`) avoids the recursive-constraint cycle TypeScript rejects, while still rejecting the offending literal at the call site.
+
+**Rejected alternatives:**
+- **Runtime guard at `defineAgent`.** Catches the error at construction time, not authoring time. The IDE shows nothing red; the failure surfaces only when the agent runs — and even then, only if the offending mode actually transitions. The contract is invisible to review and to the type checker, defeating the wrapper's authorship-time-correctness premise (spec 004 §Goal).
+- **Constrain `TPayload` too.** Payloads are the bridge from `behavior` to `assign`. A payload can carry an `Error`, a parsed Zod result, or a transient handle that the assigner reads but never writes to context. Constraining the payload itself would prevent useful idioms while adding no safety — the only path from payload to persisted context goes through `assign`, whose return type already enforces `Partial<TContext>`.
+- **`extends JsonCompatible<TContext>` as a generic bound.** TypeScript treats this as a recursive constraint cycle (the constraint mentions the parameter under constraint) and reports errors at the use site that point to the wrapper, not the user's field. The field-position pattern threads the same recursion through a positional substitution where the offending sub-type is the one rejected, surfacing the error precisely.
+
+## 022 — `deps` is provided at agent construction time and shallow-frozen
+
+**Date:** 2026-05-22
+
+**Rule:** `defineAgent` takes an optional `deps: TDeps` field (default `{}`). When the wrapper compiles the agent, it calls `Object.freeze` on the deps container exactly once, in place, then threads the *same frozen reference* into every user callback envelope (`input`, `behavior`, `routes.*.assign`, `routes.*.guard`, `EventTransition.guard`). The freeze is shallow: top-level reassignment throws under strict mode, but mutating fields inside a dep value is allowed by design. Deps live alongside, not inside, the machine's `context` — they never appear in `JSON.stringify(snapshot.context)` and never participate in the `JsonCompatible` constraint.
+
+**Rationale:** Modes that need a DB driver, an LLM client, or a logger must not import them as module globals — that couples each mode file to a specific runtime instance, forbids running two agents side-by-side with different backends, and makes test isolation require module-level mocking. The deps container makes the dependency explicit at the boundary, typed (no `any` escape), and immutable from the consumer's vantage (top-level reassignment is the failure mode the freeze prevents). Construction-time injection — rather than per-call or per-actor injection — preserves the wrapper's "one machine, one config" mental model from spec 004 and matches the lifetime of every other agent-level concern (`id`, `initial`, `context`, `modes`). Shallow freeze rather than deep freeze keeps the door open for legitimate stateful deps (a cache, a counter, a connection pool with internal bookkeeping) without exposing the wrapper to the cost or surprise of deep-freezing arbitrary consumer objects.
+
+**Rejected alternatives:**
+- **Deep freeze.** Would forbid stateful deps (caches, pools, accumulators) that are unambiguously the consumer's intent. Also expensive on arbitrary nested structures and surprising when third-party objects (a logger instance with internal buffers) start throwing on internal writes. The deps container's job is to prevent the consumer from swapping `deps.db = ...` mid-run — not to police the internals of objects the consumer owns.
+- **Per-invocation deps (factory or actor input).** Threading deps through every `invoke` per state mode reintroduces the boilerplate spec 004 exists to remove. Each mode would repeat the same forwarding plumbing, and the deps would be observable to XState's serialized snapshot — defeating both ergonomics and the DD-021 contract.
+- **Deps as part of `context`.** Forces the consumer's resources into the JSON-serialization contract from DD-021 (a DB driver is not `JsonCompatible`), and worse, makes the resources part of the machine's persisted state — so resuming from a snapshot would deserialize a stale handle to a closed connection. Deps and context have different lifetimes and different durability semantics; collapsing them would corrupt both.
+
+## 023 — `when` predicates stay deps-free
+
+**Date:** 2026-05-22
+
+**Rule:** The `when` field on `routes.*` entries keeps its bare-value signature `(payload: TPayload) => boolean`. It does **not** receive an envelope `{ payload, deps }`. The deps thread reaches `input`, `behavior`, `assign`, and `EventTransition.guard` — but `when` stays a pure predicate over the payload.
+
+**Rationale:** `when` exists to dispatch on the shape of the payload that just came back from `behavior` — that is a *value* decision, not a *world* decision. Routes are ordered, predicates are evaluated top-down, and a payload's shape is the entire universe of inputs that should determine which branch fires. Threading deps into `when` would invite asking the database from inside a route predicate, which is exactly the latency-and-correctness hazard XState guards exist to prevent (guards must be synchronous and side-effect-free). The bare signature also makes the type-level test that a guard handler can ignore `deps` (DD-022) and the predicate handler cannot accept one (this DD) cleanly separable.
+
+**Rejected alternatives:**
+- **Switch `when` to envelope shape for consistency with `assign` and `guard`.** Consistency at the syntax level masks an inconsistency in purpose: `assign` writes context and `guard` decides whether an event applies — both legitimately depend on world state. `when` only inspects the payload; widening it just because the neighboring fields take envelopes invites the latency-and-side-effect hazard above.
+- **Allow both signatures (bare and envelope) by overload.** Doubles the surface, makes the type-level "you cannot ask for deps in a `when`" test impossible to write, and gives no benefit over the consumer manually destructuring an outer closure if they really do need deps in dispatch (which they shouldn't).
+
+## 024 — `Mode` is the leaf; `CompoundMode` is the composite
+
+**Date:** 2026-05-22
+
+**Rule:** The two carrier types are named for what they *are*, not for what they wrap. A leaf — a single agent mode with `behavior`/`routes` or `on` handlers — is `Mode<TContext, TEvents, TPayload, TDeps>`, constructed via `defineMode(...)`. A node that nests other modes is `CompoundMode<TParentContext, TEvents, TDeps>`, constructed via `defineCompoundMode(...)`. The leaf is the base of the vocabulary because every agent has at least one leaf — there is no agent composed exclusively of compounds — and "mode" without qualifier should mean the unit the user reaches for first. The composite gets the longer name because the composite is the special case.
+
+**Rationale:** The previous vocabulary (`LeafMode` for leaves, `Mode` for compounds) inverted the bias: every author types `defineLeafMode(...)` dozens of times per agent and `defineMode(...)` at most a handful, so the constructor for the common case carried the qualifier and the rare case got the bare noun. The asymmetry crept into spec prose (`Mode` had to be repeatedly disambiguated as "compound" because the bare word meant the composite, not the unit). Renaming flips both surfaces: the constructor a Zoe author calls most often is the short one (`defineMode`), and the unqualified noun in prose ("a Mode") refers to the unit, matching DD-002 ("each state is an agent mode"). The compound's full name (`CompoundMode`) is now self-describing, removing the read-by-context cost. No semantic change: the type contracts, the split-brand contravariance on `TDeps` (DD-022), and the discriminated-union check (DD-019) are untouched; only the names move.
+
+**Rejected alternatives:**
+- **Keep the pre-rename vocabulary (`LeafMode` / `Mode`).** Familiarity with the existing files is the only argument. It is paid for by every future reader of every future spec, where "Mode" still means "the rare, composite kind" — exactly the lexical drag this rename removes. The cost of one mechanical rename PR is a one-time, finite tax; the cost of leaving the names misaligned recurs every time the wrapper is read.
+- **Rename only the constructor (`defineLeafMode` → `defineMode`), keep the type names.** The constructor and its return type would then disagree (`defineMode` returns a `LeafMode`), reintroducing the same disambiguation cost at every signature.
+- **`SimpleMode` / `NestedMode`, or `BaseMode` / `GroupMode`, etc.** Every alternative pair either has the same length-asymmetry problem in reverse or fails to convey what the composite actually does (nest other modes). `Mode` / `CompoundMode` reads the same way the runtime works: a Mode does one thing; a CompoundMode contains other Modes.

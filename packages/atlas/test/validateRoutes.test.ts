@@ -26,12 +26,12 @@ function passiveLeaf(): { readonly __kind: "leaf"; readonly config: object } {
 
 function compound(
     initial: string,
-    states: Record<string, unknown>,
+    modes: Record<string, unknown>,
     onDone: unknown = END,
 ): { readonly __kind: "compound"; readonly config: object } {
     return {
         __kind: "compound",
-        config: { initial, states, onDone },
+        config: { initial, modes, onDone },
     };
 }
 
@@ -372,7 +372,7 @@ describe("validateRoutes() — carrier checks", () => {
             validateRoutes({
                 foo: { type: "final" } as unknown,
             }),
-        ).toThrow(/not a LeafMode or Mode/);
+        ).toThrow(/not a Mode or CompoundMode/);
     });
 
     test("rejects unknown carrier kind", () => {

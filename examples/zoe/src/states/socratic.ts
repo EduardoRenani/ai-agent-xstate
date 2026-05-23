@@ -1,4 +1,4 @@
-import { defineMode } from "atlas";
+import { defineCompoundMode } from "atlas";
 
 import { socraticEvaluating } from "./socratic.evaluating.js";
 import { socraticListening } from "./socratic.listening.js";
@@ -11,7 +11,7 @@ import type { AgentContext, AgentEvents } from "../types.js";
 //   - achieved / abandoned → END → outer `onDone: "classifying"`
 //   - retry              → back to teaching (encoded in evaluating's
 //                           payload-driven routes; see socratic.evaluating.ts)
-export const socratic = defineMode<
+export const socratic = defineCompoundMode<
     AgentContext,
     AgentEvents,
     undefined,
@@ -22,7 +22,7 @@ export const socratic = defineMode<
     }
 >({
     initial: "teaching",
-    states: {
+    modes: {
         teaching: socraticTeaching,
         listening: socraticListening,
         evaluating: socraticEvaluating,

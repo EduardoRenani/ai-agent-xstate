@@ -4,8 +4,8 @@
 // docs/specs/004-xstate-agent-wrapper.md §"Lexical scoping of context"
 // (lines 104-111) and §Mapping line 626.
 //
-// A `Mode` with `context: { inherit, local }` exposes a narrowed view to its
-// children: `Pick<TParent, inherit[number]> & typeof local`. At runtime the
+// A `CompoundMode` with `context: { inherit, local }` exposes a narrowed view
+// to its children: `Pick<TParent, inherit[number]> & typeof local`. At runtime the
 // wrapper materializes this view by:
 //   - allocating a slot under a generated root-context key (`__<path>_local`)
 //     initialized to `local` on every entry, cleared on every exit
@@ -141,54 +141,61 @@ function splitUserUpdate(
     return rootPatch;
 }
 
-// Wrap a user `input({ context })` callback so it sees the virtual view.
+// Wrap a user `input({ context, deps })` callback so it sees the virtual
+// view. `deps` is captured verbatim from the closure that `compile.ts`
+// threaded down — the lift only transforms `context`.
 export function liftInput(
-    userInput: (args: { context: unknown }) => unknown,
+    userInput: (args: { context: unknown; deps: Readonly<Record<string, unknown>> }) => unknown,
     lift: LiftContext,
+    deps: Readonly<Record<string, unknown>>,
 ): (args: { context: unknown }) => unknown {
     return ({ context }) => {
         const sub = buildSubContext(context as Record<string, unknown>, lift);
-        return userInput({ context: sub });
+        return userInput({ context: sub, deps });
     };
 }
 
-// Wrap a user `assign({ context, payload }) => Partial<combined>` callback,
-// returning an XState `assign(...)` action that applies the split update.
+// Wrap a user `assign({ context, payload, deps }) => Partial<combined>`
+// callback, returning an XState `assign(...)` action that applies the split
+// update. `deps` is forwarded by identity from the wrapper's closure.
 export function liftExitAssign(
-    userAssign: (args: { context: unknown; payload: unknown }) => object,
+    userAssign: (args: { context: unknown; payload: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext,
+    deps: Readonly<Record<string, unknown>>,
 ): ReturnType<typeof assign> {
     return assign(({ context, event }) => {
         const root = context as Record<string, unknown>;
         const sub = buildSubContext(root, lift);
         const payload = (event as unknown as { output: { payload: unknown } }).output.payload;
-        const update = userAssign({ context: sub, payload }) as Record<string, unknown>;
+        const update = userAssign({ context: sub, payload, deps }) as Record<string, unknown>;
         return splitUserUpdate(update, root, lift);
     });
 }
 
-// Wrap a user `assign({ context, error })` callback (error routes).
+// Wrap a user `assign({ context, error, deps })` callback (error routes).
 export function liftErrorAssign(
-    userAssign: (args: { context: unknown; error: unknown }) => object,
+    userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext,
+    deps: Readonly<Record<string, unknown>>,
 ): ReturnType<typeof assign> {
     return assign(({ context, event }) => {
         const root = context as Record<string, unknown>;
         const sub = buildSubContext(root, lift);
         const error = (event as unknown as { error: unknown }).error;
-        const update = userAssign({ context: sub, error }) as Record<string, unknown>;
+        const update = userAssign({ context: sub, error, deps }) as Record<string, unknown>;
         return splitUserUpdate(update, root, lift);
     });
 }
 
-// Wrap a user `guard({ context, event })` (passive `on` transitions).
+// Wrap a user `guard({ context, event, deps })` (passive `on` transitions).
 export function liftGuard(
-    userGuard: (args: { context: unknown; event: unknown }) => boolean,
+    userGuard: (args: { context: unknown; event: unknown; deps: Readonly<Record<string, unknown>> }) => boolean,
     lift: LiftContext,
+    deps: Readonly<Record<string, unknown>>,
 ): (args: { context: unknown; event: unknown }) => boolean {
     return ({ context, event }) => {
         const sub = buildSubContext(context as Record<string, unknown>, lift);
-        return userGuard({ context: sub, event });
+        return userGuard({ context: sub, event, deps });
     };
 }
 

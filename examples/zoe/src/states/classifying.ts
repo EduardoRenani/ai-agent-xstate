@@ -1,4 +1,4 @@
-import { defineLeafMode } from "atlas";
+import { defineMode } from "atlas";
 import type { ModeOutput } from "atlas";
 
 import { chat } from "../llm-client.js";
@@ -37,7 +37,7 @@ function formatForClassification(messages: Message[]): Message[] {
     ];
 }
 
-export const classifying = defineLeafMode<AgentContext, AgentEvents, ClassifierPayload>({
+export const classifying = defineMode<AgentContext, AgentEvents, ClassifierPayload>({
     input: ({ context }) => ({ messages: context.messages }),
     behavior: async ({ input }): Promise<ModeOutput<ClassifierPayload>> => {
         const { messages } = input as { messages: Message[] };

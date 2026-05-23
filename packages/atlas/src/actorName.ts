@@ -1,4 +1,4 @@
-// Derive the XState actor name for an active `LeafMode` from its
+// Derive the XState actor name for an active `Mode` (leaf) from its
 // root-relative path. Spec: docs/design-decisions.md DD-008 — actor names
 // are `<camelCase(path)>Node`. Encoding the convention as code (here) makes
 // DD-008 an invariant enforced by the compiler, not a hand-maintained rule.

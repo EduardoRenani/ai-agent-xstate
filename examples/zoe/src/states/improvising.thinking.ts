@@ -1,4 +1,4 @@
-import { defineLeafMode, END } from "atlas";
+import { defineMode, END } from "atlas";
 import type { ModeOutput } from "atlas";
 
 import { chat } from "../llm-client.js";
@@ -20,7 +20,7 @@ const TOOLS: Record<string, Tool> = {
     },
 };
 
-export const improvisingThinking = defineLeafMode<
+export const improvisingThinking = defineMode<
     AgentContext,
     AgentEvents,
     { messages: Message[] }

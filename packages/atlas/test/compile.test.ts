@@ -11,8 +11,8 @@ import { createActor } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
-import { defineLeafMode } from "../src/defineLeafMode.ts";
 import { defineMode } from "../src/defineMode.ts";
+import { defineCompoundMode } from "../src/defineCompoundMode.ts";
 import { END, RE_THROW } from "../src/types.ts";
 import type { ModeOutput } from "../src/types.ts";
 
@@ -40,7 +40,7 @@ async function settle(): Promise<void> {
 
 describe("compile() — single active leaf agent", () => {
     test("compiles, starts, transitions via achieved payload route", async () => {
-        const classifying = defineLeafMode<Ctx, Events, { intent: "greeting" | "general" }>({
+        const classifying = defineMode<Ctx, Events, { intent: "greeting" | "general" }>({
             input: ({ context }) => context.messages,
             behavior: async () =>
                 ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<{
@@ -55,7 +55,7 @@ describe("compile() — single active leaf agent", () => {
                 abandoned: { target: "done" },
             },
         });
-        const done = defineLeafMode<Ctx, Events>({
+        const done = defineMode<Ctx, Events>({
             on: {},
         });
 
@@ -64,7 +64,7 @@ describe("compile() — single active leaf agent", () => {
             initial: "classifying",
             context: { messages: ["hi"], turns: 0 },
             events: {} as Events,
-            states: { classifying, done },
+            modes: { classifying, done },
         });
 
         const actor = startedActor(machine);
@@ -75,7 +75,7 @@ describe("compile() — single active leaf agent", () => {
 
 describe("compile() — passive leaf agent", () => {
     test("event triggers transition with action", () => {
-        const listening = defineLeafMode<Ctx, Events>({
+        const listening = defineMode<Ctx, Events>({
             on: {
                 MESSAGE: {
                     target: "echo",
@@ -83,7 +83,7 @@ describe("compile() — passive leaf agent", () => {
                 },
             },
         });
-        const echo = defineLeafMode<Ctx, Events>({ on: {} });
+        const echo = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { listening: typeof listening; echo: typeof echo }>({
             id: "agent",
@@ -96,7 +96,7 @@ describe("compile() — passive leaf agent", () => {
                     return { messages: [...context.messages, e.text] };
                 },
             },
-            states: { listening, echo },
+            modes: { listening, echo },
         });
 
         const actor = startedActor(machine);
@@ -109,7 +109,7 @@ describe("compile() — passive leaf agent", () => {
 
 describe("compile() — compound with END exits", () => {
     test("injects $end + compound onDone fires", async () => {
-        const inner = defineLeafMode<Ctx, Events>({
+        const inner = defineMode<Ctx, Events>({
             input: ({ context }) => context.messages,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -119,19 +119,19 @@ describe("compile() — compound with END exits", () => {
                 abandoned: { target: END },
             },
         });
-        const group = defineMode<Ctx, Events, undefined, { inner: typeof inner }>({
+        const group = defineCompoundMode<Ctx, Events, undefined, { inner: typeof inner }>({
             initial: "inner",
-            states: { inner },
+            modes: { inner },
             onDone: "done",
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { group: typeof group; done: typeof done }>({
             id: "agent",
             initial: "group",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { group, done },
+            modes: { group, done },
         });
 
         const actor = startedActor(machine);
@@ -142,23 +142,23 @@ describe("compile() — compound with END exits", () => {
 
 describe("compile() — END-free compound (5.12)", () => {
     test("no `$end` substate is injected when no child targets END", () => {
-        const a = defineLeafMode<Ctx, Events>({
+        const a = defineMode<Ctx, Events>({
             on: { MESSAGE: { target: "b" } },
         });
-        const b = defineLeafMode<Ctx, Events>({ on: {} });
-        const group = defineMode<Ctx, Events, undefined, { a: typeof a; b: typeof b }>({
+        const b = defineMode<Ctx, Events>({ on: {} });
+        const group = defineCompoundMode<Ctx, Events, undefined, { a: typeof a; b: typeof b }>({
             initial: "a",
-            states: { a, b },
+            modes: { a, b },
             onDone: "other", // not reachable; the compound never finalises
         });
-        const other = defineLeafMode<Ctx, Events>({ on: {} });
+        const other = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { group: typeof group; other: typeof other }>({
             id: "agent",
             initial: "group",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { group, other },
+            modes: { group, other },
         });
 
         // `getInitialSnapshot`'s value carries the nested-compound state name;
@@ -173,7 +173,7 @@ describe("compile() — compound with local context", () => {
         type Local = { attempts: number };
         type CtxLocal = { messages: readonly string[] };
 
-        const inner = defineLeafMode<{ messages: readonly string[]; attempts: number }, Events, undefined>({
+        const inner = defineMode<{ messages: readonly string[]; attempts: number }, Events, undefined>({
             input: ({ context }) => ({ a: context.attempts, m: context.messages.length }),
             behavior: async ({ input }) => {
                 const i = input as { a: number; m: number };
@@ -187,7 +187,7 @@ describe("compile() — compound with local context", () => {
             },
         });
 
-        const group = defineMode<
+        const group = defineCompoundMode<
             CtxLocal,
             Events,
             { inherit: readonly ["messages"]; local: Local },
@@ -195,17 +195,17 @@ describe("compile() — compound with local context", () => {
         >({
             context: { inherit: ["messages"] as const, local: { attempts: 0 } },
             initial: "inner",
-            states: { inner },
+            modes: { inner },
             onDone: "done",
         });
-        const done = defineLeafMode<CtxLocal, Events>({ on: {} });
+        const done = defineMode<CtxLocal, Events>({ on: {} });
 
         const machine = defineAgent<CtxLocal, Events, { group: typeof group; done: typeof done }>({
             id: "agent",
             initial: "group",
             context: { messages: ["hi"] },
             events: {} as Events,
-            states: { group, done },
+            modes: { group, done },
         });
 
         const actor = startedActor(machine);
@@ -230,7 +230,7 @@ describe("compile() — compound with local context", () => {
 
 describe("compile() — RE_THROW error route", () => {
     test("rethrow propagates as actor error", async () => {
-        const failing = defineLeafMode<Ctx, Events, undefined>({
+        const failing = defineMode<Ctx, Events, undefined>({
             input: ({ context }) => context.messages,
             behavior: async () => {
                 throw new TypeError("programmer error");
@@ -245,14 +245,14 @@ describe("compile() — RE_THROW error route", () => {
                 ],
             },
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { failing: typeof failing; done: typeof done }>({
             id: "agent",
             initial: "failing",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { failing, done },
+            modes: { failing, done },
         });
 
         // Hand-rolled subscribe — wait for the actor to surface the error.
@@ -269,7 +269,7 @@ describe("compile() — RE_THROW error route", () => {
 
 describe("compile() — validator integration (fail-fast)", () => {
     test("validateTargets fires on machine creation for unknown sibling", () => {
-        const bad = defineLeafMode<Ctx, Events>({
+        const bad = defineMode<Ctx, Events>({
             input: ({ context }) => context.messages,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -286,7 +286,7 @@ describe("compile() — validator integration (fail-fast)", () => {
                 initial: "bad",
                 context: { messages: [], turns: 0 },
                 events: {} as Events,
-                states: { bad },
+                modes: { bad },
             }),
         ).toThrow(/no such sibling/);
     });
@@ -306,13 +306,13 @@ describe("compile() — validator integration (fail-fast)", () => {
         };
 
         expect(() =>
-            defineAgent<Ctx, Events, { bad: ReturnType<typeof defineLeafMode<Ctx, Events>> }>({
+            defineAgent<Ctx, Events, { bad: ReturnType<typeof defineMode<Ctx, Events>> }>({
                 id: "agent",
                 initial: "bad",
                 context: { messages: [], turns: 0 },
                 events: {} as Events,
-                states: {
-                    bad: carrier as unknown as ReturnType<typeof defineLeafMode<Ctx, Events>>,
+                modes: {
+                    bad: carrier as unknown as ReturnType<typeof defineMode<Ctx, Events>>,
                 },
             }),
         ).toThrow(/empty array/);
@@ -321,7 +321,7 @@ describe("compile() — validator integration (fail-fast)", () => {
 
 describe("compile() — actor naming (DD-008 as invariant)", () => {
     test("leaf at `socratic.evaluating` registers `socraticEvaluatingNode`", () => {
-        const evaluating = defineLeafMode<Ctx, Events>({
+        const evaluating = defineMode<Ctx, Events>({
             input: ({ context }) => context.messages,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -331,19 +331,19 @@ describe("compile() — actor naming (DD-008 as invariant)", () => {
                 abandoned: { target: END },
             },
         });
-        const socratic = defineMode<Ctx, Events, undefined, { evaluating: typeof evaluating }>({
+        const socratic = defineCompoundMode<Ctx, Events, undefined, { evaluating: typeof evaluating }>({
             initial: "evaluating",
-            states: { evaluating },
+            modes: { evaluating },
             onDone: "done",
         });
-        const done = defineLeafMode<Ctx, Events>({ on: {} });
+        const done = defineMode<Ctx, Events>({ on: {} });
 
         const machine = defineAgent<Ctx, Events, { socratic: typeof socratic; done: typeof done }>({
             id: "agent",
             initial: "socratic",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            states: { socratic, done },
+            modes: { socratic, done },
         });
 
         // Reach into the machine's implementations to assert the actor key.
@@ -361,11 +361,11 @@ describe("compile() — full smoke (representative machine)", () => {
     test("compiles a small but representative tree end-to-end", async () => {
         type SmokeCtx = { messages: readonly string[] };
 
-        const listening = defineLeafMode<SmokeCtx, Events>({
+        const listening = defineMode<SmokeCtx, Events>({
             on: { MESSAGE: { target: "classifying", actions: "appendMessage" } },
         });
 
-        const classifying = defineLeafMode<SmokeCtx, Events, { intent: "greet" | "other" }>({
+        const classifying = defineMode<SmokeCtx, Events, { intent: "greet" | "other" }>({
             input: ({ context }) => context.messages,
             behavior: async ({ input }) => {
                 const msgs = input as readonly string[];
@@ -385,7 +385,7 @@ describe("compile() — full smoke (representative machine)", () => {
             },
         });
 
-        const greetingsThinking = defineLeafMode<SmokeCtx, Events, undefined>({
+        const greetingsThinking = defineMode<SmokeCtx, Events, undefined>({
             input: ({ context }) => context.messages,
             behavior: async () =>
                 ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
@@ -395,14 +395,14 @@ describe("compile() — full smoke (representative machine)", () => {
                 abandoned: { target: END },
             },
         });
-        const greetings = defineMode<
+        const greetings = defineCompoundMode<
             SmokeCtx,
             Events,
             undefined,
             { thinking: typeof greetingsThinking }
         >({
             initial: "thinking",
-            states: { thinking: greetingsThinking },
+            modes: { thinking: greetingsThinking },
             onDone: "listening",
         });
 
@@ -421,7 +421,7 @@ describe("compile() — full smoke (representative machine)", () => {
                     return { messages: [...context.messages, e.text] };
                 },
             },
-            states: { listening, classifying, greetings },
+            modes: { listening, classifying, greetings },
         });
 
         const actor = startedActor(machine);

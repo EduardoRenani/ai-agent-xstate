@@ -1,4 +1,4 @@
-# AI Agent XState
+# Atlas: Mode-based Agent Orchestration
 
 Monorepo with two packages:
 
@@ -13,7 +13,7 @@ Monorepo with two packages:
 - A mode terminates with one of four **outcomes**: `achieved` / `retry` / `abandoned` / `error`.
 - **Exits are bound to outcomes** — routing happens over the outcome + its typed payload, not over arbitrary conditions.
 
-Three constructors (`defineLeafMode`, `defineMode`, `defineAgent`) are the only way to express the shape. The type system rejects anything that doesn't fit: active+passive mixing in the same leaf, modes missing outcomes, cross-compound targets, retry with arbitrary target.
+Three constructors (`defineMode`, `defineCompoundMode`, `defineAgent`) are the only way to express the shape. The type system rejects anything that doesn't fit: active+passive mixing in the same leaf, modes missing outcomes, cross-compound targets, retry with arbitrary target.
 
 State machines (XState v5) live under the hood — atlas compiles to one to get the formal carrier (transitions, hierarchy, snapshot/replay) without exposing it as the API surface.
 

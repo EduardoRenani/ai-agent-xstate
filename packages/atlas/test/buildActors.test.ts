@@ -6,19 +6,19 @@ import { createActor } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { buildActors } from "../src/buildActors.ts";
-import { defineLeafMode } from "../src/defineLeafMode.ts";
 import { defineMode } from "../src/defineMode.ts";
-import type { Mode, ModeOutput } from "../src/types.ts";
+import { defineCompoundMode } from "../src/defineCompoundMode.ts";
+import type { CompoundMode, ModeOutput } from "../src/types.ts";
 import { walk } from "../src/walk.ts";
 
 type Ctx = { messages: readonly string[] };
 type Events = { type: "MESSAGE"; text: string };
 
-const rootListening = defineLeafMode<Ctx, Events>({
+const rootListening = defineMode<Ctx, Events>({
     on: { MESSAGE: { target: "classifying" } },
 });
 
-const classifying = defineLeafMode<Ctx, Events, { intent: "greeting" }>({
+const classifying = defineMode<Ctx, Events, { intent: "greeting" }>({
     input: ({ context }) => context.messages,
     behavior: async () => ({
         outcome: "achieved",
@@ -31,7 +31,7 @@ const classifying = defineLeafMode<Ctx, Events, { intent: "greeting" }>({
     },
 });
 
-const greetingsThinking = defineLeafMode<Ctx, Events, undefined>({
+const greetingsThinking = defineMode<Ctx, Events, undefined>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -41,13 +41,13 @@ const greetingsThinking = defineLeafMode<Ctx, Events, undefined>({
     },
 });
 
-const greetings: Mode<Ctx, Events> = defineMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
+const greetings: CompoundMode<Ctx, Events> = defineCompoundMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
     initial: "thinking",
-    states: { thinking: greetingsThinking },
+    modes: { thinking: greetingsThinking },
     onDone: "listening",
 });
 
-const socraticTeaching = defineLeafMode<Ctx, Events, undefined>({
+const socraticTeaching = defineMode<Ctx, Events, undefined>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -57,11 +57,11 @@ const socraticTeaching = defineLeafMode<Ctx, Events, undefined>({
     },
 });
 
-const socraticListening = defineLeafMode<Ctx, Events>({
+const socraticListening = defineMode<Ctx, Events>({
     on: { MESSAGE: { target: "evaluating" } },
 });
 
-const socraticEvaluating = defineLeafMode<Ctx, Events, undefined>({
+const socraticEvaluating = defineMode<Ctx, Events, undefined>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -71,7 +71,7 @@ const socraticEvaluating = defineLeafMode<Ctx, Events, undefined>({
     },
 });
 
-const socratic: Mode<Ctx, Events> = defineMode<
+const socratic: CompoundMode<Ctx, Events> = defineCompoundMode<
     Ctx,
     Events,
     undefined,
@@ -82,7 +82,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     }
 >({
     initial: "teaching",
-    states: {
+    modes: {
         teaching: socraticTeaching,
         listening: socraticListening,
         evaluating: socraticEvaluating,
@@ -90,7 +90,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     onDone: "listening",
 });
 
-const agentStates = {
+const agentModes = {
     listening: rootListening,
     classifying,
     greetings,
@@ -99,8 +99,8 @@ const agentStates = {
 
 describe("buildActors()", () => {
     test("key set covers every active leaf, in walk() order, with passive leaves excluded", () => {
-        const slots = walk(agentStates);
-        const actors = buildActors(slots);
+        const slots = walk(agentModes);
+        const actors = buildActors(slots, {});
 
         expect(Object.keys(actors)).toEqual([
             // listening (root, passive) — excluded
@@ -113,8 +113,8 @@ describe("buildActors()", () => {
     });
 
     test("each entry is a runnable actor logic that yields the user's ModeOutput", async () => {
-        const slots = walk(agentStates);
-        const actors = buildActors(slots);
+        const slots = walk(agentModes);
+        const actors = buildActors(slots, {});
         const logic = actors["classifyingNode"];
         expect(logic).toBeDefined();
         if (!logic) return;
@@ -131,6 +131,6 @@ describe("buildActors()", () => {
 
     test("returns {} when there are no active leaves", () => {
         const onlyPassive = walk({ listening: rootListening });
-        expect(buildActors(onlyPassive)).toEqual({});
+        expect(buildActors(onlyPassive, {})).toEqual({});
     });
 });

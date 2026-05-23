@@ -3,9 +3,9 @@
 
 import { describe, expect, test } from "vitest";
 
-import { defineLeafMode } from "../src/defineLeafMode.ts";
 import { defineMode } from "../src/defineMode.ts";
-import type { Mode, ModeOutput } from "../src/types.ts";
+import { defineCompoundMode } from "../src/defineCompoundMode.ts";
+import type { CompoundMode, ModeOutput } from "../src/types.ts";
 import { walk } from "../src/walk.ts";
 
 type Ctx = { messages: readonly string[] };
@@ -16,11 +16,11 @@ type Events = { type: "MESSAGE"; text: string };
 // and two compounds (`greetings`, `socratic`), one of which has nested
 // active+passive leaves.
 
-const rootListening = defineLeafMode<Ctx, Events>({
+const rootListening = defineMode<Ctx, Events>({
     on: { MESSAGE: { target: "classifying" } },
 });
 
-const classifying = defineLeafMode<Ctx, Events, { intent: "greeting" | "general" }>({
+const classifying = defineMode<Ctx, Events, { intent: "greeting" | "general" }>({
     input: ({ context }) => context.messages,
     behavior: async () => ({
         outcome: "achieved",
@@ -33,7 +33,7 @@ const classifying = defineLeafMode<Ctx, Events, { intent: "greeting" | "general"
     },
 });
 
-const greetingsThinking = defineLeafMode<Ctx, Events, ModeOutput<undefined>["payload"]>({
+const greetingsThinking = defineMode<Ctx, Events, ModeOutput<undefined>["payload"]>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -43,13 +43,13 @@ const greetingsThinking = defineLeafMode<Ctx, Events, ModeOutput<undefined>["pay
     },
 });
 
-const greetings: Mode<Ctx, Events> = defineMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
+const greetings: CompoundMode<Ctx, Events> = defineCompoundMode<Ctx, Events, undefined, { thinking: typeof greetingsThinking }>({
     initial: "thinking",
-    states: { thinking: greetingsThinking },
+    modes: { thinking: greetingsThinking },
     onDone: "listening",
 });
 
-const socraticTeaching = defineLeafMode<Ctx, Events, ModeOutput<undefined>["payload"]>({
+const socraticTeaching = defineMode<Ctx, Events, ModeOutput<undefined>["payload"]>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -59,11 +59,11 @@ const socraticTeaching = defineLeafMode<Ctx, Events, ModeOutput<undefined>["payl
     },
 });
 
-const socraticListening = defineLeafMode<Ctx, Events>({
+const socraticListening = defineMode<Ctx, Events>({
     on: { MESSAGE: { target: "evaluating" } },
 });
 
-const socraticEvaluating = defineLeafMode<Ctx, Events, ModeOutput<undefined>["payload"]>({
+const socraticEvaluating = defineMode<Ctx, Events, ModeOutput<undefined>["payload"]>({
     input: ({ context }) => context.messages,
     behavior: async () => ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
     routes: {
@@ -73,7 +73,7 @@ const socraticEvaluating = defineLeafMode<Ctx, Events, ModeOutput<undefined>["pa
     },
 });
 
-const socratic: Mode<Ctx, Events> = defineMode<
+const socratic: CompoundMode<Ctx, Events> = defineCompoundMode<
     Ctx,
     Events,
     undefined,
@@ -84,7 +84,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     }
 >({
     initial: "teaching",
-    states: {
+    modes: {
         teaching: socraticTeaching,
         listening: socraticListening,
         evaluating: socraticEvaluating,
@@ -92,7 +92,7 @@ const socratic: Mode<Ctx, Events> = defineMode<
     onDone: "listening",
 });
 
-const agentStates = {
+const agentModes = {
     listening: rootListening,
     classifying,
     greetings,
@@ -101,7 +101,7 @@ const agentStates = {
 
 describe("walk()", () => {
     test("enumerates every slot in depth-first pre-order with dotted paths", () => {
-        const slots = walk(agentStates);
+        const slots = walk(agentModes);
         const summary = slots.map((s) => ({ path: s.path, kind: s.kind }));
 
         expect(summary).toEqual([
@@ -116,12 +116,12 @@ describe("walk()", () => {
         ]);
     });
 
-    test("rejects raw values that are not LeafMode / Mode carriers", () => {
+    test("rejects raw values that are not Mode / CompoundMode carriers", () => {
         const bogus = { listening: { type: "atomic" } };
-        expect(() => walk(bogus)).toThrow(/is not a LeafMode or Mode/);
+        expect(() => walk(bogus)).toThrow(/is not a Mode or CompoundMode/);
     });
 
-    test("returns [] for an empty states map", () => {
+    test("returns [] for an empty modes map", () => {
         expect(walk({})).toEqual([]);
     });
 });

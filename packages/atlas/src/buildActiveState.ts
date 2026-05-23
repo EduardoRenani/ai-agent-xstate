@@ -1,6 +1,9 @@
-// Lower an active `LeafMode` slot to an XState `{ invoke: { src, input, onDone, onError? } }`
+// Lower an active `Mode` (leaf) slot to an XState `{ invoke: { src, input, onDone, onError? } }`
 // state. Spec: docs/specs/004-tasks.md Phase 5.6 + 5.7 + 5.9 +
 // docs/specs/004-xstate-agent-wrapper.md §Mapping.
+// Spec 005: every user callback envelope (input, behavior, routes.*.assign)
+// is extended with the agent's frozen `deps` reference, captured here in
+// each generated closure.
 //
 // Cardinality and order of `onDone[i]`:
 //   - one entry per `routes.achieved` route entry, in order
@@ -19,7 +22,8 @@
 //     outcome AND only when the user's payload-typed predicate agrees
 //   - `actions`: the user's optional `assign` callback wrapped in XState's
 //     `assign(...)`, with `event.output.payload` bridged into the `payload`
-//     argument the user typed against
+//     argument the user typed against, and `deps` threaded from the
+//     closure that `buildActiveState` was called with
 //
 // `routes.error` → `invoke.onError[i]` with the same shape as onDone, except:
 //   - guard sees `event.error` instead of `event.output.{outcome,payload}`
@@ -43,6 +47,7 @@ import type {
     ErrorEntry,
     ErrorRouteTarget,
     ExitEntry,
+    JsonObject,
     ModeOutput,
     Outcome,
     RetryEntry,
@@ -50,6 +55,12 @@ import type {
     Routes,
 } from "./types.ts";
 import type { LeafSlot } from "./walk.ts";
+
+// Internal pass-through placeholder for TContext at this layer. The user's
+// concrete `TContext` has already been enforced by `defineMode`'s generic
+// constraint; the build* helpers see only `unknown`-cast values and only need
+// a JSON-shaped anchor so the alias references compile.
+type InternalCtx = JsonObject;
 
 // `Array.isArray` widens `readonly T[]` to `any[]` and does not subtract it
 // from a `T | readonly T[]` union. A typed predicate fixes the narrowing
@@ -99,25 +110,25 @@ export type LoweredInvokeState = {
 
 function normalizeExitEntries(
     entry:
-        | ExitEntry<unknown, unknown>
-        | readonly ExitEntry<unknown, unknown>[],
-): readonly ExitEntry<unknown, unknown>[] {
+        | ExitEntry<InternalCtx, unknown>
+        | readonly ExitEntry<InternalCtx, unknown>[],
+): readonly ExitEntry<InternalCtx, unknown>[] {
     return isReadonlyArray(entry) ? entry : [entry];
 }
 
 function normalizeRetryEntries(
     entry:
-        | RetryEntry<unknown, unknown>
-        | readonly RetryEntry<unknown, unknown>[],
-): readonly RetryEntry<unknown, unknown>[] {
+        | RetryEntry<InternalCtx, unknown>
+        | readonly RetryEntry<InternalCtx, unknown>[],
+): readonly RetryEntry<InternalCtx, unknown>[] {
     return isReadonlyArray(entry) ? entry : [entry];
 }
 
 function normalizeErrorEntries(
     entry:
-        | ErrorEntry<unknown>
-        | readonly ErrorEntry<unknown>[],
-): readonly ErrorEntry<unknown>[] {
+        | ErrorEntry<InternalCtx>
+        | readonly ErrorEntry<InternalCtx>[],
+): readonly ErrorEntry<InternalCtx>[] {
     return isReadonlyArray(entry) ? entry : [entry];
 }
 
@@ -132,47 +143,58 @@ function makeGuard(
     };
 }
 
-// Bridge `entry.assign({ context, payload })` to XState's
+// Bridge `entry.assign({ context, payload, deps })` to XState's
 // `assign(({ context, event }) => ...)`. The payload narrowing the user
-// typed against is preserved through `event.output.payload`.
+// typed against is preserved through `event.output.payload`. The `deps`
+// reference is captured from the closure that `buildActiveState` was
+// called with — every emitted callback sees the same frozen object by
+// identity.
 //
 // When a `lift` is in effect (the enclosing compound declared
 // `context: { inherit, local }`), delegate to `liftExitAssign` instead:
 // it presents the virtual `Pick<TParent, inherit[number]> & local` view to
 // the user's callback and splits the returned partial back to the right
-// destination (agent root vs. ancestor slot vs. own slot).
+// destination (agent root vs. ancestor slot vs. own slot). `deps` is
+// forwarded verbatim through the lift wrapper.
 function wrapAssign(
-    userAssign: (args: { context: unknown; payload: unknown }) => object,
+    userAssign: (args: { context: unknown; payload: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext | undefined,
+    deps: Readonly<Record<string, unknown>>,
 ): ReturnType<typeof assign> {
     if (lift !== undefined) {
-        return liftExitAssign(userAssign, lift);
+        return liftExitAssign(userAssign, lift, deps);
     }
     return assign(({ context, event }) => {
         const output = (event as unknown as { output: ModeOutput<unknown> }).output;
-        return userAssign({ context, payload: output.payload });
+        return userAssign({ context, payload: output.payload, deps });
     });
 }
 
 function buildExitTransition(
     outcomeKey: "achieved" | "abandoned",
-    entry: ExitEntry<unknown, unknown>,
+    entry: ExitEntry<InternalCtx, unknown>,
     lift: LiftContext | undefined,
+    deps: Readonly<Record<string, unknown>>,
 ): LoweredOnDoneTransition {
     const transition: LoweredOnDoneTransition = {
         guard: makeGuard(outcomeKey, entry.when),
         target: entry.target,
     };
     if (entry.assign !== undefined) {
-        transition.actions = wrapAssign(entry.assign, lift);
+        transition.actions = wrapAssign(
+            entry.assign as (args: { context: unknown; payload: unknown; deps: Readonly<Record<string, unknown>> }) => object,
+            lift,
+            deps,
+        );
     }
     return transition;
 }
 
 function buildRetryTransition(
     selfSegment: string,
-    entry: RetryEntry<unknown, unknown>,
+    entry: RetryEntry<InternalCtx, unknown>,
     lift: LiftContext | undefined,
+    deps: Readonly<Record<string, unknown>>,
 ): LoweredOnDoneTransition {
     const transition: LoweredOnDoneTransition = {
         guard: makeGuard("retry", entry.when),
@@ -180,7 +202,11 @@ function buildRetryTransition(
         reenter: true,
     };
     if (entry.assign !== undefined) {
-        transition.actions = wrapAssign(entry.assign, lift);
+        transition.actions = wrapAssign(
+            entry.assign as (args: { context: unknown; payload: unknown; deps: Readonly<Record<string, unknown>> }) => object,
+            lift,
+            deps,
+        );
     }
     return transition;
 }
@@ -195,15 +221,16 @@ function makeErrorGuard(
 }
 
 function wrapErrorAssign(
-    userAssign: (args: { context: unknown; error: unknown }) => object,
+    userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext | undefined,
+    deps: Readonly<Record<string, unknown>>,
 ): ReturnType<typeof assign> {
     if (lift !== undefined) {
-        return liftErrorAssign(userAssign, lift);
+        return liftErrorAssign(userAssign, lift, deps);
     }
     return assign(({ context, event }) => {
         const error = (event as unknown as { error: unknown }).error;
-        return userAssign({ context, error });
+        return userAssign({ context, error, deps });
     });
 }
 
@@ -218,8 +245,9 @@ function makeReThrowAction(): LoweredReThrowAction {
 }
 
 function buildErrorTransition(
-    entry: ErrorEntry<unknown>,
+    entry: ErrorEntry<InternalCtx>,
     lift: LiftContext | undefined,
+    deps: Readonly<Record<string, unknown>>,
 ): LoweredOnErrorTransition {
     const guard = makeErrorGuard(entry.when);
 
@@ -239,14 +267,19 @@ function buildErrorTransition(
         target: entry.target,
     };
     if (entry.assign !== undefined) {
-        transition.actions = wrapErrorAssign(entry.assign, lift);
+        transition.actions = wrapErrorAssign(
+            entry.assign as (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
+            lift,
+            deps,
+        );
     }
     return transition;
 }
 
 export function buildActiveState(
     slot: LeafSlot,
-    lift?: LiftContext,
+    lift: LiftContext | undefined,
+    deps: Readonly<Record<string, unknown>>,
 ): LoweredInvokeState {
     const config = slot.config;
     if (!("behavior" in config)) {
@@ -254,7 +287,7 @@ export function buildActiveState(
             `atlas/buildActiveState: leaf at "${slot.path}" is passive — use buildPassiveState`,
         );
     }
-    const routes = config.routes as Routes<unknown, unknown>;
+    const routes = config.routes as Routes<InternalCtx, unknown>;
 
     const segments = slot.path.split(".");
     const selfSegment = segments[segments.length - 1];
@@ -265,26 +298,34 @@ export function buildActiveState(
     const onDone: LoweredOnDoneTransition[] = [];
 
     for (const entry of normalizeExitEntries(routes.achieved)) {
-        onDone.push(buildExitTransition("achieved", entry, lift));
+        onDone.push(buildExitTransition("achieved", entry, lift, deps));
     }
     for (const entry of normalizeRetryEntries(routes.retry)) {
-        onDone.push(buildRetryTransition(selfSegment, entry, lift));
+        onDone.push(buildRetryTransition(selfSegment, entry, lift, deps));
     }
     for (const entry of normalizeExitEntries(routes.abandoned)) {
-        onDone.push(buildExitTransition("abandoned", entry, lift));
+        onDone.push(buildExitTransition("abandoned", entry, lift, deps));
     }
 
-    const userInput = config.input as (args: { context: unknown }) => unknown;
+    // The user's `input` callback gains a `deps` parameter; wrap it so the
+    // XState-facing input fn matches the existing `({ context }) => unknown`
+    // shape while injecting `deps` from the closure.
+    const userInput = config.input as (args: { context: unknown; deps: Readonly<Record<string, unknown>> }) => unknown;
+    const wrappedInput: (args: { context: unknown }) => unknown =
+        lift !== undefined
+            ? liftInput(userInput, lift, deps)
+            : ({ context }) => userInput({ context, deps });
+
     const invoke: LoweredInvokeState["invoke"] = {
         src: actorName(slot.path),
-        input: lift !== undefined ? liftInput(userInput, lift) : userInput,
+        input: wrappedInput,
         onDone,
     };
 
     if (routes.error !== undefined) {
         const onError: LoweredOnErrorTransition[] = [];
         for (const entry of normalizeErrorEntries(routes.error)) {
-            onError.push(buildErrorTransition(entry, lift));
+            onError.push(buildErrorTransition(entry, lift, deps));
         }
         invoke.onError = onError;
     }

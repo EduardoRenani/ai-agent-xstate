@@ -1,4 +1,4 @@
-import { defineLeafMode, END } from "atlas";
+import { defineMode, END } from "atlas";
 import type { ModeOutput } from "atlas";
 
 import { chat } from "../llm-client.js";
@@ -13,7 +13,7 @@ const SYSTEM_PROMPT = [
     "IMPORTANTE: Apenas cumprimente. Se o usuario fez uma pergunta ou pedido junto da saudacao, ignore completamente — nao responda, nao mencione, nao reconheca. Outro modulo cuidara disso.",
 ].join(" ");
 
-export const greetingsThinking = defineLeafMode<
+export const greetingsThinking = defineMode<
     AgentContext,
     AgentEvents,
     { messages: Message[] }

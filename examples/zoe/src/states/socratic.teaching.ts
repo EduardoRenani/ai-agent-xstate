@@ -1,4 +1,4 @@
-import { defineLeafMode } from "atlas";
+import { defineMode } from "atlas";
 import type { ModeOutput } from "atlas";
 
 import { chat } from "../llm-client.js";
@@ -15,7 +15,7 @@ const SYSTEM_PROMPT = [
     "Nao use ferramentas. Responda apenas com texto.",
 ].join(" ");
 
-export const socraticTeaching = defineLeafMode<
+export const socraticTeaching = defineMode<
     AgentContext,
     AgentEvents,
     { messages: Message[] }

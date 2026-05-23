@@ -1,12 +1,12 @@
 // Phase 4 type tests for the active/passive discriminated union and the
 // mandatory keys of `Routes<C, P>`. Spec §"Type contract":
-// `ActiveLeafModeConfig` and `PassiveLeafModeConfig` are mutually exclusive;
+// `ActiveModeConfig` and `PassiveModeConfig` are mutually exclusive;
 // `achieved` / `retry` / `abandoned` are mandatory inside `routes`; `error`
 // is optional.
 
 import { describe, test } from "vitest";
 
-import { defineLeafMode } from "../../src/defineLeafMode.ts";
+import { defineMode } from "../../src/defineMode.ts";
 import type { ModeOutput } from "../../src/types.ts";
 
 type Ctx = { messages: readonly string[] };
@@ -15,7 +15,7 @@ type P = { ok: boolean };
 
 describe("active / passive variants are mutually exclusive", () => {
     test("active variant: input + behavior + routes compiles", () => {
-        defineLeafMode<Ctx, Events, P>({
+        defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { ok: true } } satisfies ModeOutput<P>),
             routes: {
@@ -27,7 +27,7 @@ describe("active / passive variants are mutually exclusive", () => {
     });
 
     test("passive variant: `on` only compiles", () => {
-        defineLeafMode<Ctx, Events>({
+        defineMode<Ctx, Events>({
             on: {
                 MESSAGE: { target: "thinking" },
             },
@@ -35,7 +35,7 @@ describe("active / passive variants are mutually exclusive", () => {
     });
 
     test("mixing `behavior` and `on` is a compile error", () => {
-        defineLeafMode<Ctx, Events, P>({
+        defineMode<Ctx, Events, P>({
             // @ts-expect-error - active and passive variants are mutually exclusive
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { ok: true } } satisfies ModeOutput<P>),
@@ -51,7 +51,7 @@ describe("active / passive variants are mutually exclusive", () => {
 
 describe("Routes mandatory-key check", () => {
     test("missing `achieved` is a compile error", () => {
-        defineLeafMode<Ctx, Events, P>({
+        defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { ok: true } } satisfies ModeOutput<P>),
             // @ts-expect-error - `achieved` is mandatory
@@ -63,7 +63,7 @@ describe("Routes mandatory-key check", () => {
     });
 
     test("missing `retry` is a compile error", () => {
-        defineLeafMode<Ctx, Events, P>({
+        defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { ok: true } } satisfies ModeOutput<P>),
             // @ts-expect-error - `retry` is mandatory
@@ -75,7 +75,7 @@ describe("Routes mandatory-key check", () => {
     });
 
     test("missing `abandoned` is a compile error", () => {
-        defineLeafMode<Ctx, Events, P>({
+        defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { ok: true } } satisfies ModeOutput<P>),
             // @ts-expect-error - `abandoned` is mandatory
@@ -87,7 +87,7 @@ describe("Routes mandatory-key check", () => {
     });
 
     test("missing `error` compiles (it is optional — defaults to re-throw)", () => {
-        defineLeafMode<Ctx, Events, P>({
+        defineMode<Ctx, Events, P>({
             input: ({ context }) => context.messages,
             behavior: async () => ({ outcome: "achieved", payload: { ok: true } } satisfies ModeOutput<P>),
             routes: {
