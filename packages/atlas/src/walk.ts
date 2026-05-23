@@ -6,7 +6,12 @@
 // dotted path. The path is used only inside `compile.ts` (for actor naming,
 // for target resolution, for error messages); it is never exposed to users.
 
-import type { LeafModeConfig } from "./types.ts";
+import type { JsonObject, LeafModeConfig } from "./types.ts";
+
+// Internal pass-through placeholder for TContext at this layer. The user's
+// concrete TContext was enforced by the `defineLeafMode` call site; here we
+// only need a JSON-shaped anchor so the alias references compile.
+type InternalCtx = JsonObject;
 
 // Internal carrier shapes. Mirrored from `defineLeafMode.ts` /
 // `defineMode.ts`. Repeated here (not imported) so the constructor modules
@@ -14,7 +19,7 @@ import type { LeafModeConfig } from "./types.ts";
 // the runtime shape.
 type LeafCarrier = {
     readonly __kind: "leaf";
-    readonly config: LeafModeConfig<unknown, { type: string }, unknown>;
+    readonly config: LeafModeConfig<InternalCtx, { type: string }, unknown>;
 };
 type CompoundCarrier = {
     readonly __kind: "compound";
@@ -24,7 +29,7 @@ type CompoundCarrier = {
 export type LeafSlot = {
     readonly kind: "leaf";
     readonly path: string;
-    readonly config: LeafModeConfig<unknown, { type: string }, unknown>;
+    readonly config: LeafModeConfig<InternalCtx, { type: string }, unknown>;
 };
 
 export type CompoundSlot = {

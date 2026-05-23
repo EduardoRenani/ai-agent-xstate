@@ -347,7 +347,7 @@ describe("integration with buildActiveState(slot, lift)", () => {
             config: config as unknown as LeafSlot["config"],
         };
 
-        const lowered = buildActiveState(slot, lift);
+        const lowered = buildActiveState(slot, lift, {});
 
         // Mount the lowered leaf as an atomic state of a machine whose root
         // context carries both inherit (`messages`) and the compound's
@@ -434,7 +434,7 @@ describe("integration: error route under a lift", () => {
             path: "foo",
             config: config as unknown as LeafSlot["config"],
         };
-        const lowered = buildActiveState(slot, lift);
+        const lowered = buildActiveState(slot, lift, {});
 
         type RootCtx = { log: string[]; __foo_local: { lastError: string } };
         const machine = setup({
@@ -507,7 +507,7 @@ describe("buildActiveState without lift (backward compatibility)", () => {
             path: "plain",
             config: config as unknown as LeafSlot["config"],
         };
-        const lowered = buildActiveState(slot); // no lift
+        const lowered = buildActiveState(slot, undefined, {}); // no lift
 
         const machine = setup({
             types: {} as { context: Ctx },

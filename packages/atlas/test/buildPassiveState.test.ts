@@ -21,7 +21,7 @@ describe("buildPassiveState()", () => {
                 MESSAGE: { target: "classifying" },
             },
         };
-        expect(buildPassiveState(config)).toEqual({
+        expect(buildPassiveState(config, undefined, {})).toEqual({
             on: { MESSAGE: { target: "classifying" } },
         });
     });
@@ -38,7 +38,7 @@ describe("buildPassiveState()", () => {
                 },
             },
         };
-        const lowered = buildPassiveState(config);
+        const lowered = buildPassiveState(config, undefined, {});
         expect(lowered.on.MESSAGE).toEqual({
             target: "classifying",
             actions: "appendUserMessage",
@@ -48,7 +48,10 @@ describe("buildPassiveState()", () => {
         });
     });
 
-    test("guard callback is preserved by reference identity", () => {
+    test("guard callback forwards `{ context, event }` to the user fn", () => {
+        // Spec 005: guards are always wrapped to inject `deps`. We assert the
+        // wrapper forwards `context`/`event` (and that the user's narrowing
+        // still works) rather than checking reference identity.
         const guard = ({ event }: { context: Ctx; event: Events }) =>
             event.type === "MESSAGE" && event.text.length > 0;
 
@@ -57,11 +60,14 @@ describe("buildPassiveState()", () => {
                 MESSAGE: { target: "classifying", guard },
             },
         };
-        const lowered = buildPassiveState(config);
+        const lowered = buildPassiveState(config, undefined, {});
         const t = lowered.on.MESSAGE;
         expect(Array.isArray(t)).toBe(false);
         if (Array.isArray(t)) return;
-        expect(t.guard).toBe(guard);
+        const ctx: Ctx = { messages: [] };
+        expect(t.guard?.({ context: ctx, event: { type: "MESSAGE", text: "hi" } })).toBe(true);
+        expect(t.guard?.({ context: ctx, event: { type: "MESSAGE", text: "" } })).toBe(false);
+        expect(t.guard?.({ context: ctx, event: { type: "RESET" } })).toBe(false);
     });
 
     test("array form: multiple transitions for the same event are preserved in order", () => {
@@ -76,7 +82,7 @@ describe("buildPassiveState()", () => {
                 ],
             },
         };
-        const lowered = buildPassiveState(config);
+        const lowered = buildPassiveState(config, undefined, {});
         const arr = lowered.on.MESSAGE;
         expect(Array.isArray(arr)).toBe(true);
         if (!Array.isArray(arr)) return;
@@ -90,7 +96,7 @@ describe("buildPassiveState()", () => {
                 RESET: { target: END },
             },
         };
-        const lowered = buildPassiveState(config);
+        const lowered = buildPassiveState(config, undefined, {});
         const t = lowered.on.RESET;
         expect(Array.isArray(t)).toBe(false);
         if (Array.isArray(t)) return;
@@ -99,6 +105,6 @@ describe("buildPassiveState()", () => {
 
     test("empty `on` map lowers to `{ on: {} }`", () => {
         const config: PassiveLeafModeConfig<Ctx, Events> = { on: {} };
-        expect(buildPassiveState(config)).toEqual({ on: {} });
+        expect(buildPassiveState(config, undefined, {})).toEqual({ on: {} });
     });
 });

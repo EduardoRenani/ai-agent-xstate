@@ -48,9 +48,13 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         expect(lowered.invoke.src).toBe("classifyingNode");
-        expect(lowered.invoke.input).toBe(inputFn);
+        // Spec 005: input is always wrapped to inject `deps`. Assert that
+        // the wrapped fn forwards `context` to the user's callback rather
+        // than checking reference identity.
+        const ctx: Ctx = { messages: ["hi"], count: 0 };
+        expect(lowered.invoke.input({ context: ctx })).toBe(ctx.messages);
         expect(lowered.invoke.onDone).toMatchObject([
             { target: "greetings" },
             { target: "classifying", reenter: true },
@@ -78,7 +82,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         expect(lowered.invoke.onDone).toMatchObject([
             { target: "greetings" },
             { target: "improvising" },
@@ -100,7 +104,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         expect(lowered.invoke.onDone).toMatchObject([
             { target: "next" },
             { target: "fallback" },
@@ -118,7 +122,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("socratic.evaluating", leaf));
+        const lowered = buildActiveState(slotAt("socratic.evaluating", leaf), undefined, {});
         expect(lowered.invoke.src).toBe("socraticEvaluatingNode");
         expect(lowered.invoke.onDone[1]).toMatchObject({
             target: "evaluating",
@@ -136,7 +140,7 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
             path: "listening",
             config: carrier.config as Parameters<typeof buildActiveState>[0]["config"],
         };
-        expect(() => buildActiveState(slot)).toThrow(/passive/);
+        expect(() => buildActiveState(slot, undefined, {})).toThrow(/passive/);
     });
 });
 
@@ -152,7 +156,7 @@ describe("buildActiveState() — guards (5.7)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         const [achievedT, retryT, abandonedT] = lowered.invoke.onDone;
 
         // achieved guard fires only on outcome === "achieved"
@@ -183,7 +187,7 @@ describe("buildActiveState() — guards (5.7)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         const [guarded, fallback] = lowered.invoke.onDone;
 
         // guarded entry fires only when outcome === "achieved" AND payload.intent === "greeting"
@@ -221,7 +225,7 @@ describe("buildActiveState() — assign wrapping (5.7)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
 
         const machine = setup({
             types: {} as { context: Ctx; events: Events },
@@ -266,7 +270,7 @@ describe("buildActiveState() — assign wrapping (5.7)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         for (const t of lowered.invoke.onDone) {
             expect(t.actions).toBeUndefined();
         }
@@ -288,7 +292,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
                 abandoned: { target: "fallback" },
             },
         });
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         expect(lowered.invoke.onError).toBeUndefined();
     });
 
@@ -303,7 +307,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
                 error: { target: "errorState" },
             },
         });
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         expect(lowered.invoke.onError).toMatchObject([{ target: "errorState" }]);
         const [t] = lowered.invoke.onError ?? [];
         // No `when` → fires for any error.
@@ -325,7 +329,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
                 ],
             },
         });
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         expect(lowered.invoke.onError).toHaveLength(2);
 
         const [guarded, defaultEntry] = lowered.invoke.onError ?? [];
@@ -366,7 +370,7 @@ describe("buildActiveState() — error routes → onError (5.9)", () => {
             },
         });
 
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
 
         const machine = setup({
             types: {} as { context: Ctx; events: Events },
@@ -418,7 +422,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
                 error: { target: RE_THROW },
             },
         });
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         const t = lowered.invoke.onError?.[0];
         expect(t).toBeDefined();
         expect(t?.target).toBeUndefined();           // RE_THROW erases target
@@ -436,7 +440,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
                 error: { target: RE_THROW },
             },
         });
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         const action = lowered.invoke.onError?.[0]?.actions;
         if (typeof action !== "function") {
             throw new Error("expected re-throw action to be a plain function");
@@ -459,7 +463,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
                 ],
             },
         });
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         const [rethrowEntry, fallback] = lowered.invoke.onError ?? [];
 
         // RE_THROW entry's guard still filters by user's `when`.
@@ -492,7 +496,7 @@ describe("buildActiveState() — RE_THROW (5.10)", () => {
                 },
             },
         });
-        const lowered = buildActiveState(slotAt("classifying", leaf));
+        const lowered = buildActiveState(slotAt("classifying", leaf), undefined, {});
         const action = lowered.invoke.onError?.[0]?.actions;
         // Action is the bare re-throw, NOT the wrapped assign. Calling it
         // throws — it does not invoke the user's assign.

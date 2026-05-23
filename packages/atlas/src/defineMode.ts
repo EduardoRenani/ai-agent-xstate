@@ -1,11 +1,19 @@
 // `defineMode` — constructs a compound mode (a state with substates).
 //
-// Spec: docs/specs/004-xstate-agent-wrapper.md §`defineMode` + §Type contract.
+// Spec: docs/specs/004-xstate-agent-wrapper.md §`defineMode`
+//        + docs/specs/005-agent-deps-and-stringifiable-context.md §`defineMode`.
 //
 // Like `defineLeafMode`, this is a thin Phase 3 shell. The generics enforce
 // the compound-local context narrowing at the call site: children's
 // `TContext` is `LocalContextOf<TParentContext, TCtx>`. The compile step in
 // `compile.ts` lowers the carrier to XState states later.
+//
+// `TDeps` is threaded through to the returned `Mode` brand via its
+// contravariant `__phantomDeps` field. See spec 005 §`defineMode` for the
+// manual-threading rationale: TypeScript cannot infer the agent's `TDeps`
+// from a sub-mode definition site (modes are typically declared in separate
+// files and only referenced from `defineAgent.modes`), so each `defineMode`
+// invocation declares its own `TDeps` generic explicitly.
 
 import type {
     CompoundContext,
@@ -25,8 +33,13 @@ import type {
  *
  * @template TParentContext  Context shape the parent scope provides.
  * @template TEvents         The agent's full event union.
+ * @template TDeps           Frozen deps container this compound demands.
  */
-export type ModeCarrier<TParentContext, TEvents extends { type: string }> = {
+export type ModeCarrier<
+    TParentContext,
+    TEvents extends { type: string },
+    TDeps extends Record<string, unknown> = Record<string, never>,
+> = {
     readonly __kind: "compound";
     readonly config: unknown;
 };
@@ -45,17 +58,22 @@ export type ModeCarrier<TParentContext, TEvents extends { type: string }> = {
  * compound's `onDone` then fires the parent-level transition.
  *
  * @template TParentContext  The context the enclosing scope provides to this
- *                           compound. At the agent root, this is the agent's
- *                           full context.
+ *                           compound. Constrained to
+ *                           `JsonCompatible<TParentContext>`.
  * @template TEvents         The agent's full event union (each variant has a
  *                           `type` discriminant).
  * @template TCtx            Either `undefined` (no narrowing — children see
  *                           `TParentContext`) or a `CompoundContext` literal
  *                           declaring which keys to `inherit` and which `local`
- *                           variables to declare.
+ *                           variables to declare. The `local` shape must
+ *                           satisfy `JsonCompatible<TLocal>` (enforced at the
+ *                           `CompoundContext` alias level).
  * @template TModes          The compound's `modes` map. Each slot is a
  *                           `LeafMode` or nested `Mode` typed against the
  *                           compound-local context view.
+ * @template TDeps           Frozen deps this compound passes to its children.
+ *                           Must match the agent's `TDeps` at the slot site
+ *                           (spec 005 §`defineMode` "Manual threading").
  *
  * @param config  `{ context?, initial, modes, onDone }`. `initial` is keyed
  *                against `TModes` so a typo is a compile error. `onDone`
@@ -72,7 +90,7 @@ export type ModeCarrier<TParentContext, TEvents extends { type: string }> = {
  * }, {
  *     thinking: LeafMode<{ messages: Msg[]; attempts: number }, Ev>;
  *     evaluating: LeafMode<{ messages: Msg[]; attempts: number }, Ev, EvalPayload>;
- * }>({
+ * }, AgentDeps>({
  *     context: { inherit: ["messages"] as const, local: { attempts: 0 } },
  *     initial: "thinking",
  *     modes: { thinking, evaluating },
@@ -84,15 +102,26 @@ export function defineMode<
     TParentContext,
     TEvents extends { type: string },
     TCtx extends
-        | CompoundContext<TParentContext, ReadonlyArray<keyof TParentContext & string>, object>
+        | CompoundContext<
+            TParentContext,
+            ReadonlyArray<keyof TParentContext & string>,
+            // The alias-level `JsonCompatible<TLocal>` bound does the
+            // real serializability check against the user's concrete shape
+            // (e.g. `{ attempts: number }`). Here we only need a structural
+            // upper bound — `object` admits the user's literal shape while
+            // satisfying the alias's `TLocal extends JsonCompatible<TLocal>`
+            // constraint (`JsonCompatible<object>` reduces to `{}`).
+            object
+        >
         | undefined,
-    TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents>,
+    TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents, TDeps>,
+    TDeps extends Record<string, unknown> = Record<string, never>,
 >(
-    config: ModeConfig<TParentContext, TEvents, TCtx, TModes>,
-): Mode<TParentContext, TEvents> {
-    const carrier: ModeCarrier<TParentContext, TEvents> = {
+    config: ModeConfig<TParentContext, TEvents, TCtx, TModes, TDeps>,
+): Mode<TParentContext, TEvents, TDeps> {
+    const carrier: ModeCarrier<TParentContext, TEvents, TDeps> = {
         __kind: "compound",
         config,
     };
-    return carrier as unknown as Mode<TParentContext, TEvents>;
+    return carrier as unknown as Mode<TParentContext, TEvents, TDeps>;
 }

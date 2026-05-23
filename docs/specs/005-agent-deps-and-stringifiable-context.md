@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft. Depends on 004 (XState Agent Wrapper). Purely additive: no renames, no field changes. Only constrains an existing generic and adds a new one.
+Done. Implemented in the `feat/agent-state-and-deps` branch (depends on 004 — XState Agent Wrapper). Purely additive: no renames, no field changes. The implementation constrained `TContext` via `JsonCompatible<T>` at field positions, added `TDeps` with shallow `Object.freeze` at construction time, threaded `deps` through every read/write callback envelope (`input`, `behavior`, `routes.*.assign`, `routes.*.guard`, `EventTransition.guard`), and kept `when` deps-free. Design decisions: DD-021 (JSON constraint), DD-022 (construction-time deps freeze), DD-023 (`when` stays deps-free). Verified by 145 runtime tests + 64 type-level tests, all passing.
 
 ## Goal
 

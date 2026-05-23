@@ -1,11 +1,18 @@
 // `defineLeafMode` — constructs a leaf agent mode (active or passive variant).
 //
-// Spec: docs/specs/004-xstate-agent-wrapper.md §`defineLeafMode` + §Type contract.
+// Spec: docs/specs/004-xstate-agent-wrapper.md §`defineLeafMode`
+//        + docs/specs/005-agent-deps-and-stringifiable-context.md §`defineLeafMode`.
 //
 // Phase 3 (these constructors) is a thin shell: it stores the user's config
 // plus a runtime `__kind` tag behind the opaque `LeafMode` brand. The actual
 // XState lowering happens in `compile.ts` (Phase 5) and is reached only via
 // `defineAgent`. Users never inspect the returned object.
+//
+// The `TDeps` generic flows through to the brand via `__phantomDeps`, which
+// puts it in function-argument position — making `LeafMode` contravariant in
+// `TDeps`. That gives the slot-time variance check in `defineAgent.modes`
+// the right direction structurally: a `LeafMode` demanding `{ db }` slots
+// into agents whose deps include at least `db`.
 
 import type { LeafMode, LeafModeConfig } from "./types.ts";
 
@@ -17,10 +24,16 @@ import type { LeafMode, LeafModeConfig } from "./types.ts";
  * @template TContext  Context shape this leaf reads/writes.
  * @template TEvents   The agent's full event union (each variant has a `type`).
  * @template TPayload  Payload shape carried by `ModeOutput<TPayload>`.
+ * @template TDeps     Frozen deps container this leaf demands.
  */
-export type LeafModeCarrier<TContext, TEvents extends { type: string }, TPayload> = {
+export type LeafModeCarrier<
+    TContext,
+    TEvents extends { type: string },
+    TPayload,
+    TDeps extends Record<string, unknown> = Record<string, never>,
+> = {
     readonly __kind: "leaf";
-    readonly config: LeafModeConfig<TContext, TEvents, TPayload>;
+    readonly config: LeafModeConfig<TContext, TEvents, TPayload, TDeps>;
 };
 
 /**
@@ -37,10 +50,11 @@ export type LeafModeCarrier<TContext, TEvents extends { type: string }, TPayload
  * The two variants are mutually exclusive at the type level: mixing `behavior`
  * and `on` is a compile error.
  *
- * @template TContext  Shape of the context this leaf observes. At the agent's
- *                     top level, this is the agent's full context. Inside a
- *                     `defineMode` with a narrowing `context`, this is the
- *                     compound-local view: inherited keys + declared locals.
+ * @template TContext  Shape of the context this leaf observes. Constrained to
+ *                     `JsonCompatible<TContext>`. At the agent's top level,
+ *                     this is the agent's full context. Inside a `defineMode`
+ *                     with a narrowing `context`, this is the compound-local
+ *                     view: inherited keys + declared locals.
  * @template TEvents   The agent's full event union. Each variant must have a
  *                     `type: string` discriminant. Passive `on` handlers are
  *                     typed against this union via `Extract<TEvents, { type: K }>`.
@@ -49,20 +63,25 @@ export type LeafModeCarrier<TContext, TEvents extends { type: string }, TPayload
  *                     `routes.*.assign` for payload-driven dispatch. Defaults
  *                     to `unknown` (relevant only for passive leaves, which
  *                     never produce a payload).
+ * @template TDeps     Frozen deps this leaf wants to see. Defaults to
+ *                     `Record<string, never>` — a leaf with the default
+ *                     slots into any agent. A leaf that declares
+ *                     `<…, { db: Driver }>` can only slot into agents whose
+ *                     `defineAgent.deps` provides at least `db`.
  *
  * @param config  An `ActiveLeafModeConfig` or a `PassiveLeafModeConfig`. The
  *                discriminator is structural — TypeScript picks the variant
  *                from which keys are present.
  *
  * @returns An opaque `LeafMode` brand. User code cannot inspect it; only
- *          `defineMode` and `defineAgent` accept it as a `states` slot.
+ *          `defineMode` and `defineAgent` accept it as a `modes` slot.
  *
  * @example Active leaf — classify an intent and route on the payload.
  * ```ts
  * const classifying = defineLeafMode<Ctx, Ev, { intent: "greet" | "learn" }>({
- *     input: ({ context }) => ({ messages: context.messages }),
- *     behavior: async ({ input }) => {
- *         const intent = await classify(input);
+ *     input: ({ context, deps }) => ({ messages: context.messages }),
+ *     behavior: async ({ input, deps }) => {
+ *         const intent = await deps.llm.classify(input);
  *         return { outcome: "achieved", payload: { intent } };
  *     },
  *     routes: {
@@ -89,15 +108,16 @@ export function defineLeafMode<
     TContext,
     TEvents extends { type: string },
     TPayload = unknown,
+    TDeps extends Record<string, unknown> = Record<string, never>,
 >(
-    config: LeafModeConfig<TContext, TEvents, TPayload>,
-): LeafMode<TContext, TEvents, TPayload> {
-    const carrier: LeafModeCarrier<TContext, TEvents, TPayload> = {
+    config: LeafModeConfig<TContext, TEvents, TPayload, TDeps>,
+): LeafMode<TContext, TEvents, TPayload, TDeps> {
+    const carrier: LeafModeCarrier<TContext, TEvents, TPayload, TDeps> = {
         __kind: "leaf",
         config,
     };
     // The brand is a phantom — at runtime the object is just the carrier.
     // The cast is the single boundary where the opaque type is minted; user
     // code can only obtain `LeafMode` values through this function.
-    return carrier as unknown as LeafMode<TContext, TEvents, TPayload>;
+    return carrier as unknown as LeafMode<TContext, TEvents, TPayload, TDeps>;
 }

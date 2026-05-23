@@ -100,7 +100,7 @@ const agentModes = {
 describe("buildActors()", () => {
     test("key set covers every active leaf, in walk() order, with passive leaves excluded", () => {
         const slots = walk(agentModes);
-        const actors = buildActors(slots);
+        const actors = buildActors(slots, {});
 
         expect(Object.keys(actors)).toEqual([
             // listening (root, passive) — excluded
@@ -114,7 +114,7 @@ describe("buildActors()", () => {
 
     test("each entry is a runnable actor logic that yields the user's ModeOutput", async () => {
         const slots = walk(agentModes);
-        const actors = buildActors(slots);
+        const actors = buildActors(slots, {});
         const logic = actors["classifyingNode"];
         expect(logic).toBeDefined();
         if (!logic) return;
@@ -131,6 +131,6 @@ describe("buildActors()", () => {
 
     test("returns {} when there are no active leaves", () => {
         const onlyPassive = walk({ listening: rootListening });
-        expect(buildActors(onlyPassive)).toEqual({});
+        expect(buildActors(onlyPassive, {})).toEqual({});
     });
 });

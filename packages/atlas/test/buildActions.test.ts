@@ -18,11 +18,11 @@ type Events =
 
 describe("buildActions()", () => {
     test("returns {} when `actions` is undefined", () => {
-        expect(buildActions(undefined)).toEqual({});
+        expect(buildActions(undefined, {})).toEqual({});
     });
 
     test("returns {} when `actions` is an empty record", () => {
-        expect(buildActions({})).toEqual({});
+        expect(buildActions({}, {})).toEqual({});
     });
 
     test("named actions apply the user's Partial<TContext> update via XState assign", () => {
@@ -36,7 +36,7 @@ describe("buildActions()", () => {
                 const ctx = context as Ctx;
                 return { count: ctx.count + 1 };
             },
-        });
+        }, {});
 
         const machine = setup({
             types: {} as { context: Ctx; events: Events },
@@ -72,7 +72,7 @@ describe("buildActions()", () => {
             a: () => ({}),
             b: () => ({}),
             c: () => ({}),
-        });
+        }, {});
         expect(Object.keys(wrapped).sort()).toEqual(["a", "b", "c"]);
     });
 });
