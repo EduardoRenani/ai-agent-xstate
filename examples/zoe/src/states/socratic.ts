@@ -1,4 +1,4 @@
-import { defineCompoundMode } from "atlas";
+import { defineCompoundMode } from "@eduardorenani/atlasjs";
 
 import { socraticEvaluating } from "./socratic.evaluating.js";
 import { socraticListening } from "./socratic.listening.js";

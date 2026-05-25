@@ -2,7 +2,7 @@
 // This file re-exports it so existing consumers under `examples/zoe/src/`
 // keep working without each importing from `atlas` directly.
 
-export type { ModeOutput } from "atlas";
+export type { ModeOutput } from "@eduardorenani/atlasjs";
 
 // Agent-level types — shared by every migrated mode and the root machine.
 import type { Message } from "./llm-client.js";

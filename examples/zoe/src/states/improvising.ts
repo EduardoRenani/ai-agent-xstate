@@ -1,4 +1,4 @@
-import { defineCompoundMode } from "atlas";
+import { defineCompoundMode } from "@eduardorenani/atlasjs";
 
 import { improvisingThinking } from "./improvising.thinking.js";
 import type { AgentContext, AgentEvents } from "../types.js";

@@ -8,3 +8,4 @@
 | 004 | XState Agent Wrapper    | Done   |
 | 005 | Agent Deps & Stringifiable Context | Done   |
 | 006 | Modes, Not States       | Done   |
+| 007 | Release & Distribution  | Draft  |

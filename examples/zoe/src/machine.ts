@@ -1,6 +1,6 @@
 import { createActor } from "xstate";
 
-import { defineAgent } from "atlas";
+import { defineAgent } from "@eduardorenani/atlasjs";
 
 import { classifying } from "./states/classifying.js";
 import { greetings } from "./states/greetings.js";

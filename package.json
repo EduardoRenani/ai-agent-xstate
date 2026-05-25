@@ -8,8 +8,9 @@
         "examples/*"
     ],
     "scripts": {
-        "start": "npm --workspace zoe start",
-        "test": "npm --workspaces --if-present run test",
+        "start": "npm run build -w @eduardorenani/atlasjs && npm --workspace zoe start",
+        "build": "npm run build -w @eduardorenani/atlasjs",
+        "test": "npm run build -w @eduardorenani/atlasjs && npm --workspaces --if-present run test",
         "test:types": "npm --workspaces --if-present run test:types",
         "sync:diagrams": "node scripts/sync-mermaid.mjs",
         "prepare": "git config core.hooksPath .githooks"

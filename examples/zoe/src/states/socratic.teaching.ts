@@ -1,5 +1,5 @@
-import { defineMode } from "atlas";
-import type { ModeOutput } from "atlas";
+import { defineMode } from "@eduardorenani/atlasjs";
+import type { ModeOutput } from "@eduardorenani/atlasjs";
 
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";

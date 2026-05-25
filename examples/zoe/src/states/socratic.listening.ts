@@ -1,4 +1,4 @@
-import { defineMode } from "atlas";
+import { defineMode } from "@eduardorenani/atlasjs";
 
 import type { AgentContext, AgentEvents } from "../types.js";
 

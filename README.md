@@ -1,9 +1,23 @@
 # Atlas: Mode-based Agent Orchestration
 
+[![npm](https://img.shields.io/npm/v/@eduardorenani/atlasjs/alpha.svg?label=%40eduardorenani%2Fatlasjs%40alpha)](https://www.npmjs.com/package/@eduardorenani/atlasjs)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](#)
+
 Monorepo with two packages:
 
-- [`packages/atlas/`](packages/atlas/) — TypeScript library for mode-based agent orchestration.
+- [`packages/atlas/`](packages/atlas/) — TypeScript library for mode-based agent orchestration. Published to npm as [`@eduardorenani/atlasjs`](https://www.npmjs.com/package/@eduardorenani/atlasjs).
 - [`examples/zoe/`](examples/zoe/) — example agent built on Atlas (CLI in Portuguese, OpenRouter / Claude Sonnet).
+
+## Install
+
+```bash
+npm install @eduardorenani/atlasjs@alpha xstate
+```
+
+`xstate@^5` is a peer dependency. ESM only, Node ≥ 20.
+
+User-facing docs: [`docs/USAGE.md`](docs/USAGE.md). Spec index: [`docs/specs/README.md`](docs/specs/README.md).
 
 ## Atlas
 

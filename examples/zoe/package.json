@@ -8,7 +8,7 @@
         "test": "vitest run"
     },
     "dependencies": {
-        "atlas": "*",
+        "@eduardorenani/atlasjs": "*",
         "xstate": "^5",
         "openai": "^4"
     },
