@@ -1,6 +1,6 @@
 {
     "name": "@eduardorenani/atlasjs",
-    "version": "0.1.0-alpha.0",
+    "version": "0.1.0-alpha.1",
     "description": "Mode-based agent orchestration on top of XState v5. Typed modes, four-outcome contract, goal-bound exits.",
     "type": "module",
     "main": "./dist/index.js",
