@@ -13,7 +13,10 @@ import type { ModeOutput } from "../src/types.js";
 
 type ClassifyResult = ModeOutput<{ intent: "greetings" | "socratic" | "improvise" | "none" }>;
 type MessagesResult = ModeOutput<{ messages: Message[] }>;
-type EvaluatingResult = ModeOutput<{ result: "achieved" | "retry" | "abandoned" }>;
+// Spec 003 §`socratic.evaluating`: the actor maps the model's judgment to
+// one of three outcomes (achieved / retry / abandoned) and ships
+// `{ understood: boolean }` as the payload. Tests speak the same shape.
+type EvaluatingResult = ModeOutput<{ understood: boolean }>;
 
 function createTestActor(options: {
     classifyResults: ClassifyResult[];
@@ -154,7 +157,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "achieved" } },
+                { outcome: "achieved", payload: { understood: true } },
             ],
         });
 
@@ -197,7 +200,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "achieved" } },
+                { outcome: "achieved", payload: { understood: true } },
             ],
         });
 
@@ -232,8 +235,11 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao revisada. Tente novamente?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "retry" } },
-                { outcome: "achieved", payload: { result: "achieved" } },
+                // Spec 003: "not_understood" → achieved + understood: false
+                // → guard routes back to teaching (no wrapper retry needed
+                // when the LLM produced a parseable judgment).
+                { outcome: "achieved", payload: { understood: false } },
+                { outcome: "achieved", payload: { understood: true } },
             ],
         });
 
@@ -277,7 +283,10 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao. Pergunta?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "abandoned" } },
+                // Spec 003: "abandoned" judgment → abandoned bucket (not
+                // encoded in the payload anymore — spec 008 lets the
+                // compound route through the real bucket).
+                { outcome: "abandoned", payload: { understood: false } },
             ],
             improvisingResults: [
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Sao 10:30." }] } },

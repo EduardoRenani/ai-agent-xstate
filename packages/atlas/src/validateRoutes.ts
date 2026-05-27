@@ -37,6 +37,7 @@ type CompoundCarrier = {
     readonly __kind: "compound";
     readonly config: {
         readonly modes: Record<string, unknown>;
+        readonly routes?: unknown;
     };
 };
 
@@ -144,8 +145,45 @@ function validateActiveLeafRoutes(
     validateRouteListShape("error", routes.error, leafPath);
 }
 
+// Compound routes (spec 008): same shape rules as a leaf, with one extra
+// constraint — `retry` MUST be `readonly []` (compounds never bubble retry;
+// the bucket exists for symmetry only). `achieved` and `abandoned` are
+// required; `error` is optional (omitting it re-throws above the compound).
+function validateCompoundRoutes(
+    config: { readonly routes?: unknown },
+    compoundPath: string,
+): void {
+    const routes = (config.routes ?? {}) as Record<string, unknown>;
+    validateRouteListShape("achieved", routes.achieved, compoundPath);
+    validateRouteListShape("abandoned", routes.abandoned, compoundPath);
+    validateRouteListShape("error", routes.error, compoundPath);
+    // `retry` MUST be present AND MUST be the empty array. Non-empty arrays
+    // and missing slots are both wrapper-internal misuse — the type alias
+    // (`retry: readonly []`) already enforces this; the runtime check
+    // catches `as`-bypasses.
+    if (routes.retry === undefined) {
+        fail(
+            compoundPath,
+            "retry",
+            null,
+            `compound \`retry\` is required and must be the empty array \`[]\` ` +
+                `(compounds never bubble retry; the bucket exists for shape symmetry)`,
+        );
+    }
+    if (!Array.isArray(routes.retry) || routes.retry.length !== 0) {
+        fail(
+            compoundPath,
+            "retry",
+            null,
+            `compound \`retry\` must be the empty array \`[]\` (got ${
+                Array.isArray(routes.retry) ? `array of length ${routes.retry.length}` : typeof routes.retry
+            })`,
+        );
+    }
+}
+
 // Public entry point. Recursively validates `routes` shape on every active
-// leaf in the tree. Passive leaves are skipped (no `routes` field).
+// leaf AND every compound. Passive leaves are skipped (no `routes` field).
 export function validateRoutes(
     modes: Record<string, unknown>,
     parentPath: string = "",
@@ -158,6 +196,7 @@ export function validateRoutes(
                 validateActiveLeafRoutes(carrier.config, path);
             }
         } else {
+            validateCompoundRoutes(carrier.config, path);
             validateRoutes(carrier.config.modes, path);
         }
     }

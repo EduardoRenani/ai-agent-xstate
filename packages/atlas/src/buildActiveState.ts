@@ -42,7 +42,13 @@ import {
     liftInput,
     type LiftContext,
 } from "./contextLift.ts";
-import { RE_THROW } from "./types.ts";
+import { END, RE_THROW } from "./types.ts";
+import {
+    END_ABANDONED,
+    END_ACHIEVED,
+    END_ERROR,
+    type EndBucketSymbol,
+} from "./endBuckets.ts";
 import type {
     ErrorEntry,
     ErrorRouteTarget,
@@ -73,9 +79,14 @@ export type LoweredGuard = (args: {
     event: { output: ModeOutput<unknown> };
 }) => boolean;
 
+// `target` widens `RouteTarget` with `EndBucketSymbol` because `END` is
+// replaced in-place with a bucket sentinel below (`bucketTarget`) so that
+// `injectEnd` can later rewrite it to the correct `$end_<outcome>` state
+// name. The sentinel never escapes `compile.ts` — it is rewritten before
+// `createMachine` receives the lowered shape.
 export type LoweredOnDoneTransition = {
     guard?: LoweredGuard;
-    target?: RouteTarget;
+    target?: RouteTarget | EndBucketSymbol | string;
     reenter?: boolean;
     actions?: ReturnType<typeof assign>;
 };
@@ -95,7 +106,7 @@ export type LoweredErrorAction = ReturnType<typeof assign> | LoweredReThrowActio
 
 export type LoweredOnErrorTransition = {
     guard?: LoweredErrorGuard;
-    target?: ErrorRouteTarget;
+    target?: ErrorRouteTarget | EndBucketSymbol | string;
     actions?: LoweredErrorAction;
 };
 
@@ -170,6 +181,18 @@ function wrapAssign(
     });
 }
 
+// Map the user-visible `END` to the bucket-specific internal sentinel.
+// Non-END targets pass through untouched. `injectEnd` later rewrites the
+// sentinel to the matching `$end_<outcome>` state name at the enclosing
+// compound's level.
+function bucketTargetForExit(
+    target: RouteTarget,
+    outcomeKey: "achieved" | "abandoned",
+): RouteTarget | EndBucketSymbol {
+    if (target !== END) return target;
+    return outcomeKey === "achieved" ? END_ACHIEVED : END_ABANDONED;
+}
+
 function buildExitTransition(
     outcomeKey: "achieved" | "abandoned",
     entry: ExitEntry<InternalCtx, unknown>,
@@ -178,7 +201,7 @@ function buildExitTransition(
 ): LoweredOnDoneTransition {
     const transition: LoweredOnDoneTransition = {
         guard: makeGuard(outcomeKey, entry.when),
-        target: entry.target,
+        target: bucketTargetForExit(entry.target, outcomeKey),
     };
     if (entry.assign !== undefined) {
         transition.actions = wrapAssign(
@@ -262,9 +285,13 @@ function buildErrorTransition(
         };
     }
 
+    // `END` in `routes.error` → `END_ERROR` bucket sentinel. RE_THROW was
+    // already handled above; everything else is a sibling name.
+    const errTarget: ErrorRouteTarget | EndBucketSymbol =
+        entry.target === END ? END_ERROR : entry.target;
     const transition: LoweredOnErrorTransition = {
         guard,
-        target: entry.target,
+        target: errTarget,
     };
     if (entry.assign !== undefined) {
         transition.actions = wrapErrorAssign(

@@ -64,7 +64,7 @@ function buildParentView(
 
 // Build the virtual subContext a child callback sees: inherit keys read
 // from the parent view (live), local keys read from this compound's slot.
-function buildSubContext(
+export function buildSubContext(
     rootContext: Record<string, unknown>,
     lift: LiftContext,
 ): Record<string, unknown> {

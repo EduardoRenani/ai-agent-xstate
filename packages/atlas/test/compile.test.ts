@@ -122,7 +122,11 @@ describe("compile() — compound with END exits", () => {
         const group = defineCompoundMode<Ctx, Events, undefined, { inner: typeof inner }>({
             initial: "inner",
             modes: { inner },
-            onDone: "done",
+            routes: {
+                achieved: { target: "done" },
+                retry: [],
+                abandoned: { target: "done" },
+            },
         });
         const done = defineMode<Ctx, Events>({ on: {} });
 
@@ -149,7 +153,12 @@ describe("compile() — END-free compound (5.12)", () => {
         const group = defineCompoundMode<Ctx, Events, undefined, { a: typeof a; b: typeof b }>({
             initial: "a",
             modes: { a, b },
-            onDone: "other", // not reachable; the compound never finalises
+            // Not reachable; the compound never finalises. Required for shape.
+            routes: {
+                achieved: { target: "other" },
+                retry: [],
+                abandoned: { target: "other" },
+            },
         });
         const other = defineMode<Ctx, Events>({ on: {} });
 
@@ -196,7 +205,11 @@ describe("compile() — compound with local context", () => {
             context: { inherit: ["messages"] as const, local: { attempts: 0 } },
             initial: "inner",
             modes: { inner },
-            onDone: "done",
+            routes: {
+                achieved: { target: "done" },
+                retry: [],
+                abandoned: { target: "done" },
+            },
         });
         const done = defineMode<CtxLocal, Events>({ on: {} });
 
@@ -334,7 +347,11 @@ describe("compile() — actor naming (DD-008 as invariant)", () => {
         const socratic = defineCompoundMode<Ctx, Events, undefined, { evaluating: typeof evaluating }>({
             initial: "evaluating",
             modes: { evaluating },
-            onDone: "done",
+            routes: {
+                achieved: { target: "done" },
+                retry: [],
+                abandoned: { target: "done" },
+            },
         });
         const done = defineMode<Ctx, Events>({ on: {} });
 
@@ -403,7 +420,11 @@ describe("compile() — full smoke (representative machine)", () => {
         >({
             initial: "thinking",
             modes: { thinking: greetingsThinking },
-            onDone: "listening",
+            routes: {
+                achieved: { target: "listening" },
+                retry: [],
+                abandoned: { target: "listening" },
+            },
         });
 
         const machine = defineAgent<

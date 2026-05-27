@@ -30,14 +30,26 @@ function passiveLeaf(on: object): { readonly __kind: "leaf"; readonly config: ob
     };
 }
 
+// Spec 008: compounds expose `routes` (achieved/retry/abandoned[/error])
+// instead of a single `onDone` target. The legacy `onDone` arg used by these
+// fixtures is the exit target shared by achieved and abandoned — fan it out
+// into the new shape so each call site keeps reading naturally.
 function compound(
     initial: string,
     modes: Record<string, unknown>,
-    onDone: unknown,
+    exitTarget: unknown,
 ): { readonly __kind: "compound"; readonly config: object } {
     return {
         __kind: "compound",
-        config: { initial, modes, onDone },
+        config: {
+            initial,
+            modes,
+            routes: {
+                achieved: { target: exitTarget },
+                retry: [],
+                abandoned: { target: exitTarget },
+            },
+        },
     };
 }
 
@@ -366,7 +378,7 @@ describe("validateTargets() — error message format", () => {
         }
     });
 
-    test("compound onDone descriptor uses `onDone` literal", () => {
+    test("compound routes descriptor uses `routes.<bucket>[<i>]` (spec 008)", () => {
         try {
             validateTargets({
                 outer: compound(
@@ -381,7 +393,9 @@ describe("validateTargets() — error message format", () => {
         } catch (e) {
             const msg = (e as Error).message;
             expect(msg).toContain('"outer"');
-            expect(msg).toContain("onDone");
+            // Spec 008: compounds no longer use `onDone` — the achieved
+            // bucket carries the bad target and surfaces in the descriptor.
+            expect(msg).toContain("routes.achieved[0]");
             expect(msg).toContain('"ghost"');
         }
     });

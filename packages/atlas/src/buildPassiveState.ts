@@ -14,6 +14,8 @@
 // before the final XState `createMachine` call.
 
 import { liftGuard, type LiftContext } from "./contextLift.ts";
+import { END_ACHIEVED, type EndBucketSymbol } from "./endBuckets.ts";
+import { END } from "./types.ts";
 import type {
     EventTransition,
     JsonObject,
@@ -27,9 +29,13 @@ type InternalCtx = JsonObject;
 
 // Intermediate, XState-shaped transition. Loose typing on `context` / `event`
 // — the wrapper does not see the user's concrete types at this layer;
-// they were already enforced by the `defineMode` call site.
+// they were already enforced by the `defineMode` call site. `target` widens
+// to include `EndBucketSymbol` because passive `target: END` is replaced
+// in-place with `END_ACHIEVED` (spec 008 — passive END defaults to the
+// achieved bucket); `injectEnd` rewrites the sentinel to the matching
+// `$end_achieved` state name at the enclosing compound's level.
 export type LoweredTransition = {
-    target?: RouteTarget;
+    target?: RouteTarget | EndBucketSymbol | string;
     actions?: string | readonly string[];
     guard?: (args: { context: unknown; event: unknown }) => boolean;
 };
@@ -51,7 +57,11 @@ function mapTransition(
     deps: Readonly<Record<string, unknown>>,
 ): LoweredTransition {
     const out: LoweredTransition = {};
-    if (t.target !== undefined) out.target = t.target;
+    if (t.target !== undefined) {
+        // Passive `target: END` defaults to bubbling `achieved` (spec 008
+        // §"Outcome propagation rules"). Non-END targets pass through.
+        out.target = t.target === END ? END_ACHIEVED : t.target;
+    }
     if (t.actions !== undefined) out.actions = t.actions;
     if (t.guard !== undefined) {
         // The user typed `guard` as `({ context, event, deps }) => boolean`

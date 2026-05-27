@@ -10,24 +10,26 @@ const SYSTEM_PROMPT = [
     "Sua unica funcao e analisar a conversa e decidir um de tres resultados. Voce NAO fala com o usuario.",
     "",
     "Responda APENAS com JSON neste formato exato:",
-    '{"evaluation": "achieved" | "retry" | "abandoned"}',
+    '{"judgment": "understood" | "not_understood" | "abandoned"}',
     "",
     "Regras:",
-    '- "achieved": o usuario demonstrou compreensao correta do conceito.',
-    '- "retry": a resposta esta incorreta, incompleta, ou o usuario disse que nao sabe.',
+    '- "understood": o usuario demonstrou compreensao correta do conceito.',
+    '- "not_understood": a resposta esta incorreta, incompleta, ou o usuario disse que nao sabe.',
     '- "abandoned": o usuario pediu explicitamente para parar, mudar de assunto, ou nao quer continuar a verificacao.',
     "",
     "Retorne APENAS o JSON, sem markdown, sem code blocks, sem texto extra, sem campo feedback.",
 ].join("\n");
 
-// The model decides one of three results, but only ONE of them maps to the
-// wrapper's structural retry (which self-loops on the same leaf). The
-// originals "retry" and "achieved" / "abandoned" each branch to a DIFFERENT
-// sibling — retry goes back to `teaching`, achieved/abandoned exit via END.
-// Wrapper retry can't redirect to a sibling, so we encode the three results
-// in the payload and dispatch from `routes.achieved` instead.
-type EvalResult = "achieved" | "retry" | "abandoned";
-type EvalPayload = { result: EvalResult };
+// Spec 003 §`socratic.evaluating` shape: the model produces one of three
+// judgments, mapped to a wrapper outcome:
+//   - "understood"     → achieved + { understood: true  }  → END (compound exits)
+//   - "not_understood" → achieved + { understood: false }  → "teaching"
+//   - "abandoned"      → abandoned + { understood: false } → END (compound exits)
+// Anything else (invalid JSON, transport error, unknown judgment) → retry,
+// which the wrapper self-loops on this leaf per DD-014. Spec 008 lets us
+// use the `abandoned` bucket directly — the prior payload-only encoding
+// (everything under `achieved`) was a workaround for the missing bucket.
+type EvalPayload = { understood: boolean };
 
 export const socraticEvaluating = defineMode<AgentContext, AgentEvents, EvalPayload>({
     input: ({ context }) => ({ messages: context.messages }),
@@ -39,26 +41,37 @@ export const socraticEvaluating = defineMode<AgentContext, AgentEvents, EvalPayl
             throw new Error("Socratic evaluating: unexpected response from chat()");
         }
 
-        let evaluation: EvalResult = "retry";
+        let judgment: "understood" | "not_understood" | "abandoned" | "unknown" = "unknown";
         try {
-            const parsed = JSON.parse(last.content) as { evaluation: string };
-            if (parsed.evaluation === "achieved" || parsed.evaluation === "abandoned") {
-                evaluation = parsed.evaluation;
+            const parsed = JSON.parse(last.content) as { judgment: string };
+            if (
+                parsed.judgment === "understood" ||
+                parsed.judgment === "not_understood" ||
+                parsed.judgment === "abandoned"
+            ) {
+                judgment = parsed.judgment;
             }
         } catch {
-            // fall back to retry — the original .mode.ts file defaulted the
-            // same way (socratic.evaluating.mode.ts:36-40).
+            // Unparseable response → judgment stays "unknown" → wrapper retry.
         }
 
-        return { outcome: "achieved", payload: { result: evaluation } };
+        if (judgment === "understood") {
+            return { outcome: "achieved", payload: { understood: true } };
+        }
+        if (judgment === "not_understood") {
+            return { outcome: "achieved", payload: { understood: false } };
+        }
+        if (judgment === "abandoned") {
+            return { outcome: "abandoned", payload: { understood: false } };
+        }
+        return { outcome: "retry", payload: { understood: false } };
     },
     routes: {
-        // Match the original onDone array (machine.ts:136-148) — first match
-        // wins. `retry` from the model loops back to `teaching`; achieved
-        // and abandoned both exit the compound through END.
+        // Spec 003 §`socratic.evaluating` "onDone guards": branch by
+        // `payload.understood` within achieved; abandoned bubbles out via
+        // the dedicated bucket; retry self-loops with no entry needed.
         achieved: [
-            { when: (p) => p.result === "achieved",  target: END },
-            { when: (p) => p.result === "abandoned", target: END },
+            { when: (p) => p.understood, target: END },
             { target: "teaching" },
         ],
         retry: [],

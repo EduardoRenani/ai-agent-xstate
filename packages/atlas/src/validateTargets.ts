@@ -38,7 +38,7 @@ type CompoundCarrier = {
     readonly __kind: "compound";
     readonly config: {
         readonly modes: Record<string, unknown>;
-        readonly onDone: unknown;
+        readonly routes?: unknown;
     };
 };
 
@@ -165,12 +165,30 @@ function validatePassiveLeaf(
     }
 }
 
+// Compound routes (spec 008): exit/error targets land in the **enclosing
+// scope** (the compound's parent), so they're validated against the
+// compound's OWN siblings — the same logic as a leaf. `END` (bubble further)
+// and `RE_THROW` (compound error bucket) pass through.
 function validateCompound(
     carrier: CompoundCarrier,
     compoundPath: string,
     siblings: readonly string[],
 ): void {
-    checkTarget(carrier.config.onDone, siblings, compoundPath, "onDone");
+    const routes = (carrier.config.routes ?? {}) as Record<string, unknown>;
+    const groups: readonly { key: "achieved" | "abandoned" | "error"; allowReThrow: boolean }[] = [
+        { key: "achieved", allowReThrow: false },
+        { key: "abandoned", allowReThrow: false },
+        { key: "error", allowReThrow: true },
+    ];
+    for (const { key } of groups) {
+        if (routes[key] === undefined) continue;
+        const entries = normalize(routes[key]);
+        for (let i = 0; i < entries.length; i += 1) {
+            const target = (entries[i] as { target?: unknown }).target;
+            checkTarget(target, siblings, compoundPath, `routes.${key}[${i}]`);
+        }
+    }
+    // `routes.retry: readonly []` carries no target; nothing to validate.
 }
 
 // Public entry point. Recursively validates every `target` in the tree.

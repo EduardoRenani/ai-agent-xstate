@@ -7,6 +7,7 @@ import { describe, expect, test } from "vitest";
 
 import { buildPassiveState } from "../src/buildPassiveState.ts";
 import { END } from "../src/types.ts";
+import { END_ACHIEVED } from "../src/endBuckets.ts";
 import type { PassiveModeConfig } from "../src/types.ts";
 
 type Ctx = { messages: readonly string[] };
@@ -90,7 +91,7 @@ describe("buildPassiveState()", () => {
         expect(arr[1]).toEqual({ target: "classifying", actions: "appendUserMessage" });
     });
 
-    test("END target stays as the END symbol (rewrite to `$end` substate is slice 5.11)", () => {
+    test("END target is rewritten to the `achieved` bucket sentinel (spec 008: passive END defaults to achieved)", () => {
         const config: PassiveModeConfig<Ctx, Events> = {
             on: {
                 RESET: { target: END },
@@ -100,7 +101,7 @@ describe("buildPassiveState()", () => {
         const t = lowered.on.RESET;
         expect(Array.isArray(t)).toBe(false);
         if (Array.isArray(t)) return;
-        expect(t.target).toBe(END);
+        expect(t.target).toBe(END_ACHIEVED);
     });
 
     test("empty `on` map lowers to `{ on: {} }`", () => {

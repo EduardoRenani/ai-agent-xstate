@@ -1,5 +1,7 @@
 # 004 — XState Agent Wrapper
 
+> **Status update (spec 008):** the original `CompoundModeConfig.onDone: RouteTarget` single-exit surface described below has been **generalized**. Compound modes now expose the same four-bucket `routes: CompoundRoutes` (`achieved` / `retry` / `abandoned` / `error`) that leaf `Mode` already has, plus an optional `output()` callback that produces the compound's payload. See **[spec 008 — Compound Mode Routes](./008-compound-mode-routes.md)** for the current API. The `onDone:` examples in this spec are kept for historical context; read them as `routes.achieved.target` (and accept that abandoned/retry/error semantics did not exist on compounds at the time this spec was written).
+
 ## Goal
 
 Introduce a thin wrapper over XState v5 — published as the `atlas` package — that removes the placement frictions identified in the design decisions and the README "Takeaways" section, while preserving every guarantee XState provides. The wrapper does not replace XState — it compiles down to a standard `setup().createMachine()` and the runtime, types, and inspector behavior are unchanged. The library is designed to grow into a small orchestration layer for AI agents (per-mode LLM configuration, observability hooks), but this spec only covers the foundation that makes those extensions possible.

@@ -3,9 +3,9 @@ import { defineCompoundMode } from "@eduardorenani/atlasjs";
 import { greetingsThinking } from "./greetings.thinking.js";
 import type { AgentContext, AgentEvents } from "../types.js";
 
-// Single-substate compound: thinking → END → outer `onDone: "classifying"`.
-// Wraps `greetingsThinking` so the leaf can target END (the only way to
-// exit a compound) instead of a sibling at the agent root.
+// Single-substate compound: thinking → END → outer routes back to
+// "classifying". Wraps `greetingsThinking` so the leaf can target END (the
+// only way to exit a compound) instead of a sibling at the agent root.
 export const greetings = defineCompoundMode<
     AgentContext,
     AgentEvents,
@@ -14,5 +14,9 @@ export const greetings = defineCompoundMode<
 >({
     initial: "thinking",
     modes: { thinking: greetingsThinking },
-    onDone: "classifying",
+    routes: {
+        achieved: { target: "classifying" },
+        retry: [],
+        abandoned: { target: "classifying" },
+    },
 });

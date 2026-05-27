@@ -140,7 +140,11 @@ describe("synthetic compound-local slot persistence", () => {
             context: { inherit: ["messages"] as const, local: { attempts: 0 } },
             initial: "bump",
             modes: { bump: innerBump, settled: innerSettled },
-            onDone: "idle",
+            routes: {
+                achieved: { target: "idle" },
+                retry: [],
+                abandoned: { target: "idle" },
+            },
         });
         const idle = defineMode<RootCtx, Events>({ on: {} });
 
