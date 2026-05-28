@@ -1,6 +1,6 @@
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-21
+%% Atualizado: 2026-05-28
 %% Fonte: examples/zoe/src/index.ts, examples/zoe/src/machine.ts, examples/zoe/src/llm-client.ts, examples/zoe/src/states/*.ts
 sequenceDiagram
     participant user as [ENTRY] User
@@ -53,7 +53,7 @@ sequenceDiagram
             machine->>client: invoke improvisingMode (with tools)
             client->>api: chat.completions.create (may iterate on tool_calls)
             api-->>client: ModeOutput of messages (achieved)
-            Note over machine: improvising → classifying (assign, print). On transport error: onError → classifying (log).
+            Note over machine: improvising → classifying (assign, print)
 
         else intent = none
             Note over machine: classifying → listening (root, no mode invoked)
