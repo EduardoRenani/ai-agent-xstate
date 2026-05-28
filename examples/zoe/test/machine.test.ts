@@ -6,6 +6,7 @@ import { createActor, fromPromise } from "xstate";
 vi.mock("../src/llm-client.js", () => ({ chat: vi.fn() }));
 
 import { agentMachine } from "../src/machine.js";
+import { chat } from "../src/llm-client.js";
 import type { Message } from "../src/llm-client.js";
 import type { ModeOutput } from "../src/types.js";
 
@@ -13,7 +14,10 @@ import type { ModeOutput } from "../src/types.js";
 
 type ClassifyResult = ModeOutput<{ intent: "greetings" | "socratic" | "improvise" | "none" }>;
 type MessagesResult = ModeOutput<{ messages: Message[] }>;
-type EvaluatingResult = ModeOutput<{ result: "achieved" | "retry" | "abandoned" }>;
+// Spec 003 §`socratic.evaluating`: the actor maps the model's judgment to
+// one of three outcomes (achieved / retry / abandoned) and ships
+// `{ understood: boolean }` as the payload. Tests speak the same shape.
+type EvaluatingResult = ModeOutput<{ understood: boolean }>;
 
 function createTestActor(options: {
     classifyResults: ClassifyResult[];
@@ -154,7 +158,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures sao funcoes que capturam variaveis. O que acontece com a variavel x apos retornar a funcao interna?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "achieved" } },
+                { outcome: "achieved", payload: { understood: true } },
             ],
         });
 
@@ -197,7 +201,7 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Closures explicados. Pergunta: o que acontece com x?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "achieved" } },
+                { outcome: "achieved", payload: { understood: true } },
             ],
         });
 
@@ -232,8 +236,11 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao revisada. Tente novamente?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "retry" } },
-                { outcome: "achieved", payload: { result: "achieved" } },
+                // Spec 003: "not_understood" → achieved + understood: false
+                // → guard routes back to teaching (no wrapper retry needed
+                // when the LLM produced a parseable judgment).
+                { outcome: "achieved", payload: { understood: false } },
+                { outcome: "achieved", payload: { understood: true } },
             ],
         });
 
@@ -265,6 +272,115 @@ describe("agentMachine", () => {
         actor.stop();
     });
 
+    it("retry assign increments the socratic-local evalRetries counter", async () => {
+        const actor = createTestActor({
+            classifyResults: [
+                { outcome: "achieved", payload: { intent: "socratic" } },
+                { outcome: "achieved", payload: { intent: "none" } },
+            ],
+            socraticTeachingResults: [
+                { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao. Pergunta?" }] } },
+            ],
+            socraticEvaluatingResults: [
+                // Two unusable judgments → wrapper retry self-loops the leaf,
+                // each running the compound-local `assign` before re-invoking
+                // behavior; the third pass exits the compound.
+                { outcome: "retry", payload: { understood: false } },
+                { outcome: "retry", payload: { understood: false } },
+                { outcome: "achieved", payload: { understood: true } },
+            ],
+        });
+
+        // The local slot is wiped when socratic exits (DD-018), so capture the
+        // peak counter live via the subscription.
+        const slotKey = "__socratic_local";
+        let peakRetries = 0;
+        actor.subscribe((snapshot) => {
+            const slot = (snapshot.context as Record<string, unknown>)[slotKey];
+            if (slot !== null && typeof slot === "object") {
+                const n = (slot as { evalRetries?: number }).evalRetries ?? 0;
+                if (n > peakRetries) peakRetries = n;
+            }
+        });
+
+        actor.send({ type: "MESSAGE", text: "me explica closures" });
+        await waitForReady(actor);
+
+        // One reply enters evaluating; the two retry outcomes self-loop the
+        // leaf (no listening in between) before the pass exits the compound.
+        actor.send({ type: "MESSAGE", text: "hmm" });
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.matches("listening")).toBe(true);
+        expect(peakRetries).toBe(2);
+        // Compound exit cleared the local slot; the global context never carried it.
+        expect((snapshot.context as Record<string, unknown>)[slotKey]).toBeUndefined();
+        expect((snapshot.context as Record<string, unknown>).evalRetries).toBeUndefined();
+
+        actor.stop();
+    });
+
+    it("circuit-breaks the socratic retry loop once evalRetries hits the limit", async () => {
+        // Unlike the other tests, this one runs the REAL `socraticEvaluating`
+        // behavior (the actor is intentionally NOT stubbed) so the
+        // circuit-breaker actually executes. chat() returns unparseable
+        // content → judgment "unknown" → wrapper retry while under the cap,
+        // then `abandoned` once the compound-local evalRetries reaches 3.
+        vi.mocked(chat).mockResolvedValue([{ role: "assistant", content: "isto nao e json valido" }]);
+
+        let classifyIndex = 0;
+        const classifyResults: ClassifyResult[] = [
+            { outcome: "achieved", payload: { intent: "socratic" } },
+            // After the breaker abandons, the compound exits to classifying.
+            { outcome: "achieved", payload: { intent: "none" } },
+        ];
+        const testMachine = agentMachine.provide({
+            actors: {
+                classifyingNode: fromPromise<ClassifyResult, { messages: Message[] }>(async () => {
+                    const r = classifyResults[classifyIndex] ?? classifyResults[classifyResults.length - 1];
+                    classifyIndex++;
+                    return r;
+                }),
+                socraticTeachingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => ({
+                    outcome: "achieved",
+                    payload: { messages: [{ role: "assistant", content: "Explicacao. Pergunta?" }] },
+                })),
+                // socraticEvaluatingNode left real on purpose.
+            },
+        });
+        const actor = createActor(testMachine);
+        actor.start();
+
+        const slotKey = "__socratic_local";
+        let peakRetries = 0;
+        actor.subscribe((snapshot) => {
+            const slot = (snapshot.context as Record<string, unknown>)[slotKey];
+            if (slot !== null && typeof slot === "object") {
+                const n = (slot as { evalRetries?: number }).evalRetries ?? 0;
+                if (n > peakRetries) peakRetries = n;
+            }
+        });
+
+        actor.send({ type: "MESSAGE", text: "me explica closures" });
+        await waitForReady(actor);
+
+        // The reply enters evaluating; the real behavior self-loops the leaf
+        // three times (bumping evalRetries to 3) and then bails via abandoned.
+        actor.send({ type: "MESSAGE", text: "hmm sei la" });
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.matches("listening")).toBe(true);
+        // 3 retries bring evalRetries to RETRY_LIMIT; the 4th evaluation reads
+        // 3 >= 3 and abandons instead of retrying forever.
+        expect(peakRetries).toBe(3);
+        // Compound exit cleared the local slot; global context never carried it.
+        expect((snapshot.context as Record<string, unknown>)[slotKey]).toBeUndefined();
+
+        actor.stop();
+    });
+
     it("handles socratic abandonment", async () => {
         const actor = createTestActor({
             classifyResults: [
@@ -277,7 +393,10 @@ describe("agentMachine", () => {
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Explicacao. Pergunta?" }] } },
             ],
             socraticEvaluatingResults: [
-                { outcome: "achieved", payload: { result: "abandoned" } },
+                // Spec 003: "abandoned" judgment → abandoned bucket (not
+                // encoded in the payload anymore — spec 008 lets the
+                // compound route through the real bucket).
+                { outcome: "abandoned", payload: { understood: false } },
             ],
             improvisingResults: [
                 { outcome: "achieved", payload: { messages: [{ role: "assistant", content: "Sao 10:30." }] } },

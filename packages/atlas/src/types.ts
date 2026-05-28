@@ -327,6 +327,47 @@ export type Routes<
         | RouteList<ErrorEntry<TContext, TDeps>>;
 };
 
+/**
+ * The route table for a `CompoundMode`. Same shape as `Routes` with two
+ * differences (DD-025, spec 008 §`CompoundRoutes`):
+ *
+ * 1. **`retry` is constrained to `readonly []`** — shape symmetry with `Mode`
+ *    only. A compound cannot bubble `retry`: children's `RetryEntry` has no
+ *    `target` (DD-014), so `target: END` is structurally impossible inside
+ *    `routes.retry`. The bucket exists so consumers reading a `CompoundMode`
+ *    next to a `Mode` see the same four-key shape.
+ * 2. **`error` is optional** — same semantics as `Mode.routes.error`: when
+ *    omitted, an END rooted inside a child's `routes.error` re-throws above
+ *    the compound (the existing "loud failure" default).
+ *
+ * The compound's outcome bucket is whichever bucket of the exiting child
+ * contained `target: END`. `routes.achieved.when(payload)` and
+ * `routes.abandoned.when(payload)` see the `TPayload` produced by the
+ * compound's optional `output?` callback (or `undefined` when `output` is
+ * omitted).
+ *
+ * @template TContext  Context shape visible to `assign` callbacks.
+ * @template TPayload  Payload type produced by the compound's `output?`
+ *                     callback; `undefined` when `output` is omitted.
+ * @template TDeps     Frozen deps container, forwarded to every `assign`.
+ */
+export type CompoundRoutes<
+    TContext,
+    TPayload,
+    TDeps extends Record<string, unknown> = Record<string, never>,
+> = {
+    achieved:
+        | ExitEntry<TContext, TPayload, TDeps>
+        | RouteList<ExitEntry<TContext, TPayload, TDeps>>;
+    retry: readonly [];
+    abandoned:
+        | ExitEntry<TContext, TPayload, TDeps>
+        | RouteList<ExitEntry<TContext, TPayload, TDeps>>;
+    error?:
+        | ErrorEntry<TContext, TDeps>
+        | RouteList<ErrorEntry<TContext, TDeps>>;
+};
+
 // ── Event handlers (passive Mode) ────────────────────────────────────
 
 /**
@@ -483,19 +524,28 @@ export interface Mode<
  * contravariance for `TDeps` as `Mode`. User code cannot inspect the inside;
  * the brand only exists to constrain what `modes` slots accept.
  *
+ * `TPayload` (DD-025) is the type produced by the compound's optional
+ * `output?` callback. It threads into the enclosing scope's `routes.*.when`
+ * dispatch when this compound itself is nested as a child of a parent
+ * compound. Defaults to `unknown` so an explicitly-omitted `output` doesn't
+ * have to be declared at every nesting level.
+ *
  * @template TContext  Context shape provided by the enclosing scope.
  * @template TEvents   The agent's full event union.
+ * @template TPayload  Payload type produced by `output?` (default `unknown`).
  * @template TDeps     Frozen deps container the compound demands.
  */
 export interface CompoundMode<
     TContext,
     TEvents extends { type: string },
+    TPayload = unknown,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > {
     readonly [__compoundBrand]: true;
     readonly __phantomCompound?: {
         context: TContext;
         events: TEvents;
+        payload: TPayload;
     };
     readonly __phantomDeps?: (deps: TDeps) => void;
 }
@@ -522,7 +572,8 @@ export type ModesMap<
     TDeps extends Record<string, unknown> = Record<string, never>,
 > = Readonly<Record<
     string,
-    Mode<TContext, TEvents, unknown, TDeps> | CompoundMode<TContext, TEvents, TDeps>
+    | Mode<TContext, TEvents, unknown, TDeps>
+    | CompoundMode<TContext, TEvents, unknown, TDeps>
 >>;
 
 // ── Compound-local context (lexical scoping) ─────────────────────────
@@ -576,19 +627,33 @@ export type LocalContextOf<TParent, TCtx> =
 
 /**
  * The config passed to `defineCompoundMode`. `initial` is typed as
- * `keyof TModes` so a typo here is a compile error. `onDone` is the parent-
- * level transition target fired when any child routes to `END`; it accepts a
- * sibling name OR `END` (when the compound itself is nested inside another).
+ * `keyof TModes` so a typo here is a compile error.
  *
  * `context` is OPTIONAL. When present, children see only
  * `Pick<TParentContext, inherit[number]> & typeof local`; when omitted they
  * see the full `TParentContext`. See `defineCompoundMode` §"Lexical scoping".
+ *
+ * `output?` (DD-025, spec 008) is an OPTIONAL callback invoked when any child
+ * routes to `END`, AFTER that child's `assign` has run. Its return value
+ * becomes `event.output.payload` on the parent's `onDone` dispatch, available
+ * to `routes.*.when` callbacks. When omitted, `TPayload` defaults to
+ * `undefined` and `when(payload)` callbacks see `undefined`.
+ *
+ * `routes` (DD-025, spec 008) replaces the previous single `onDone:
+ * RouteTarget` field. Same four-key shape as `Mode.routes`, with
+ * `retry: readonly []` (shape symmetry only — compounds cannot bubble retry).
+ * The compound's outcome bucket is whichever bucket of the exiting child
+ * contained `target: END`. Passive `on[event].target = END` lowers to
+ * `achieved` (default; spec 008 §"Outcome propagation rules").
  *
  * @template TParentContext  Context shape the enclosing scope provides.
  * @template TEvents         The agent's full event union.
  * @template TCtx            Either a `CompoundContext` literal or `undefined`.
  * @template TModes          The compound's `modes` map, typed against the
  *                           compound-local context view.
+ * @template TPayload        Payload type produced by `output?`. Defaults to
+ *                           `undefined` so omitting `output` requires no
+ *                           explicit type argument.
  * @template TDeps           Frozen deps container. Flows to every slot.
  */
 export type CompoundModeConfig<
@@ -605,12 +670,17 @@ export type CompoundModeConfig<
         }
         | undefined,
     TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents, TDeps>,
+    TPayload = undefined,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > = {
     context?: TCtx;
     initial: keyof TModes & string;
     modes: TModes;
-    onDone: RouteTarget;
+    output?: (args: {
+        context: LocalContextOf<TParentContext, TCtx>;
+        deps: TDeps;
+    }) => TPayload;
+    routes: CompoundRoutes<TParentContext, TPayload, TDeps>;
 };
 
 /**

@@ -3,65 +3,89 @@ import type { ModeOutput } from "@eduardorenani/atlasjs";
 
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";
-import type { AgentContext, AgentEvents } from "../types.js";
+import type { AgentEvents, SocraticContext } from "../types.js";
 
 const SYSTEM_PROMPT = [
     "Voce e Zoe, um assistente educacional avaliando a resposta do usuario a uma pergunta de contra-prova.",
     "Sua unica funcao e analisar a conversa e decidir um de tres resultados. Voce NAO fala com o usuario.",
     "",
     "Responda APENAS com JSON neste formato exato:",
-    '{"evaluation": "achieved" | "retry" | "abandoned"}',
+    '{"judgment": "understood" | "not_understood" | "abandoned"}',
     "",
     "Regras:",
-    '- "achieved": o usuario demonstrou compreensao correta do conceito.',
-    '- "retry": a resposta esta incorreta, incompleta, ou o usuario disse que nao sabe.',
+    '- "understood": o usuario demonstrou compreensao correta do conceito.',
+    '- "not_understood": a resposta esta incorreta, incompleta, ou o usuario disse que nao sabe.',
     '- "abandoned": o usuario pediu explicitamente para parar, mudar de assunto, ou nao quer continuar a verificacao.',
     "",
     "Retorne APENAS o JSON, sem markdown, sem code blocks, sem texto extra, sem campo feedback.",
 ].join("\n");
 
-// The model decides one of three results, but only ONE of them maps to the
-// wrapper's structural retry (which self-loops on the same leaf). The
-// originals "retry" and "achieved" / "abandoned" each branch to a DIFFERENT
-// sibling — retry goes back to `teaching`, achieved/abandoned exit via END.
-// Wrapper retry can't redirect to a sibling, so we encode the three results
-// in the payload and dispatch from `routes.achieved` instead.
-type EvalResult = "achieved" | "retry" | "abandoned";
-type EvalPayload = { result: EvalResult };
+// Spec 003 §`socratic.evaluating` shape: the model produces one of three
+// judgments, mapped to a wrapper outcome:
+//   - "understood"     → achieved + { understood: true  }  → END (compound exits)
+//   - "not_understood" → achieved + { understood: false }  → "teaching"
+//   - "abandoned"      → abandoned + { understood: false } → END (compound exits)
+// Anything else (invalid JSON, transport error, unknown judgment) → retry,
+// which the wrapper self-loops on this leaf per DD-014. Spec 008 lets us
+// use the `abandoned` bucket directly — the prior payload-only encoding
+// (everything under `achieved`) was a workaround for the missing bucket.
+type EvalPayload = { understood: boolean };
 
-export const socraticEvaluating = defineMode<AgentContext, AgentEvents, EvalPayload>({
-    input: ({ context }) => ({ messages: context.messages }),
+// Circuit-breaker: once the compound-local `evalRetries` reaches this many
+// unusable model outputs, stop self-looping and bail out via `abandoned` so
+// the socratic loop terminates instead of retrying forever (spec 003
+// §`socratic`). The counter resets per socratic session via DD-018.
+const RETRY_LIMIT = 3;
+
+export const socraticEvaluating = defineMode<SocraticContext, AgentEvents, EvalPayload>({
+    input: ({ context }) => ({ messages: context.messages, evalRetries: context.evalRetries }),
     behavior: async ({ input }): Promise<ModeOutput<EvalPayload>> => {
-        const { messages } = input as { messages: Message[] };
+        const { messages, evalRetries } = input as { messages: Message[]; evalRetries: number };
+        
+        if (evalRetries >= RETRY_LIMIT) {
+            return { outcome: "abandoned", payload: { understood: false } };
+        }
+        
         const result = await chat(messages, SYSTEM_PROMPT);
         const last = result[result.length - 1];
         if (!last || last.role !== "assistant" || last.content === null) {
             throw new Error("Socratic evaluating: unexpected response from chat()");
         }
 
-        let evaluation: EvalResult = "retry";
+        let judgment: "understood" | "not_understood" | "abandoned" | "unknown" = "unknown";
         try {
-            const parsed = JSON.parse(last.content) as { evaluation: string };
-            if (parsed.evaluation === "achieved" || parsed.evaluation === "abandoned") {
-                evaluation = parsed.evaluation;
+            const parsed = JSON.parse(last.content) as { judgment: string };
+            if (
+                parsed.judgment === "understood" ||
+                parsed.judgment === "not_understood" ||
+                parsed.judgment === "abandoned"
+            ) {
+                judgment = parsed.judgment;
             }
         } catch {
-            // fall back to retry — the original .mode.ts file defaulted the
-            // same way (socratic.evaluating.mode.ts:36-40).
+            return { outcome: "retry", payload: { understood: false } };
         }
 
-        return { outcome: "achieved", payload: { result: evaluation } };
+        if (judgment === "understood") {
+            return { outcome: "achieved", payload: { understood: true } };
+        }
+        if (judgment === "not_understood") {
+            return { outcome: "achieved", payload: { understood: false } };
+        }
+        if (judgment === "abandoned") {
+            return { outcome: "abandoned", payload: { understood: false } };
+        }
+        return { outcome: "retry", payload: { understood: false } };
     },
     routes: {
-        // Match the original onDone array (machine.ts:136-148) — first match
-        // wins. `retry` from the model loops back to `teaching`; achieved
-        // and abandoned both exit the compound through END.
         achieved: [
-            { when: (p) => p.result === "achieved",  target: END },
-            { when: (p) => p.result === "abandoned", target: END },
+            { when: (p) => p.understood, target: END },
             { target: "teaching" },
         ],
-        retry: [],
+        // retry self-loops the leaf (DD-014). The `assign` runs before the
+        // wrapper re-invokes `behavior`, bumping the compound-local counter —
+        // a retry-scoped write to `socratic`'s local slot (spec 008 §RetryEntry).
+        retry: { assign: ({ context }) => ({ evalRetries: context.evalRetries + 1 }) },
         abandoned: { target: END },
     },
 });

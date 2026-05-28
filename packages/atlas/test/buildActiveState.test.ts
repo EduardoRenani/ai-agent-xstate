@@ -8,6 +8,7 @@ import { describe, expect, test } from "vitest";
 import { buildActiveState } from "../src/buildActiveState.ts";
 import { defineMode } from "../src/defineMode.ts";
 import { END, RE_THROW } from "../src/types.ts";
+import { END_ABANDONED } from "../src/endBuckets.ts";
 import type { ModeOutput } from "../src/types.ts";
 import type { LeafSlot } from "../src/walk.ts";
 
@@ -89,7 +90,9 @@ describe("buildActiveState() — structure & ordering (5.6)", () => {
             { target: "classifying", reenter: true },
             { target: "classifying", reenter: true },
             { target: "listening" },
-            { target: END },
+            // `target: END` in `routes.abandoned` is rewritten to the
+            // `abandoned` bucket sentinel (spec 008 outcome propagation).
+            { target: END_ABANDONED },
         ]);
     });
 

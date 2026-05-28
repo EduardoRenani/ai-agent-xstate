@@ -3,7 +3,8 @@ import { defineCompoundMode } from "@eduardorenani/atlasjs";
 import { improvisingThinking } from "./improvising.thinking.js";
 import type { AgentContext, AgentEvents } from "../types.js";
 
-// Single-substate compound: thinking → END → outer `onDone: "classifying"`.
+// Single-substate compound: thinking → END → outer routes back to
+// "classifying".
 export const improvising = defineCompoundMode<
     AgentContext,
     AgentEvents,
@@ -12,5 +13,9 @@ export const improvising = defineCompoundMode<
 >({
     initial: "thinking",
     modes: { thinking: improvisingThinking },
-    onDone: "classifying",
+    routes: {
+        achieved: { target: "classifying" },
+        retry: [],
+        abandoned: { target: "classifying" },
+    },
 });

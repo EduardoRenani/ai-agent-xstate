@@ -34,11 +34,14 @@ import type {
  *
  * @template TParentContext  Context shape the parent scope provides.
  * @template TEvents         The agent's full event union.
+ * @template TPayload        Payload type produced by the compound's `output?`
+ *                           callback (DD-025).
  * @template TDeps           Frozen deps container this compound demands.
  */
 export type CompoundModeCarrier<
     TParentContext,
     TEvents extends { type: string },
+    TPayload = unknown,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > = {
     readonly __kind: "compound";
@@ -56,7 +59,9 @@ export type CompoundModeCarrier<
  * - Without `context`: children see the full `TParentContext`.
  *
  * Children route out of the compound via `END` (defined in `./types.ts`); the
- * compound's `onDone` then fires the parent-level transition.
+ * compound's `routes` then fire the parent-level transition. The compound's
+ * outcome bucket is whichever bucket of the exiting child contained
+ * `target: END` (DD-025, spec 008 §"Outcome propagation rules").
  *
  * @template TParentContext  The context the enclosing scope provides to this
  *                           compound. Constrained to
@@ -72,13 +77,19 @@ export type CompoundModeCarrier<
  * @template TModes          The compound's `modes` map. Each slot is a
  *                           `Mode` (leaf) or nested `CompoundMode` typed
  *                           against the compound-local context view.
+ * @template TPayload        Payload type produced by the compound's optional
+ *                           `output?` callback (DD-025). Defaults to
+ *                           `undefined` — when `output` is omitted, the
+ *                           compound emits payload `undefined` to its parent.
  * @template TDeps           Frozen deps this compound passes to its children.
  *                           Must match the agent's `TDeps` at the slot site
  *                           (spec 005 §`defineCompoundMode` "Manual threading").
  *
- * @param config  `{ context?, initial, modes, onDone }`. `initial` is keyed
- *                against `TModes` so a typo is a compile error. `onDone`
- *                accepts a sibling name or `END` (when nested further).
+ * @param config  `{ context?, initial, modes, output?, routes }`. `initial` is
+ *                keyed against `TModes` so a typo is a compile error. `routes`
+ *                takes the same four-key shape as `Mode.routes`; the compound's
+ *                outcome bucket is whichever bucket of the exiting child
+ *                contained `target: END`.
  *
  * @returns An opaque `CompoundMode` brand. Only `defineCompoundMode` /
  *          `defineAgent` accept it as a `modes` slot.
@@ -91,11 +102,15 @@ export type CompoundModeCarrier<
  * }, {
  *     thinking: Mode<{ messages: Msg[]; attempts: number }, Ev>;
  *     evaluating: Mode<{ messages: Msg[]; attempts: number }, Ev, EvalPayload>;
- * }, AgentDeps>({
+ * }, undefined, AgentDeps>({
  *     context: { inherit: ["messages"] as const, local: { attempts: 0 } },
  *     initial: "thinking",
  *     modes: { thinking, evaluating },
- *     onDone: "listening",
+ *     routes: {
+ *         achieved:  { target: "listening" },
+ *         retry:     [],
+ *         abandoned: { target: "listening" },
+ *     },
  * });
  * ```
  */
@@ -116,13 +131,14 @@ export function defineCompoundMode<
         >
         | undefined,
     TModes extends ModesMap<LocalContextOf<TParentContext, TCtx>, TEvents, TDeps>,
+    TPayload = undefined,
     TDeps extends Record<string, unknown> = Record<string, never>,
 >(
-    config: CompoundModeConfig<TParentContext, TEvents, TCtx, TModes, TDeps>,
-): CompoundMode<TParentContext, TEvents, TDeps> {
-    const carrier: CompoundModeCarrier<TParentContext, TEvents, TDeps> = {
+    config: CompoundModeConfig<TParentContext, TEvents, TCtx, TModes, TPayload, TDeps>,
+): CompoundMode<TParentContext, TEvents, TPayload, TDeps> {
+    const carrier: CompoundModeCarrier<TParentContext, TEvents, TPayload, TDeps> = {
         __kind: "compound",
         config,
     };
-    return carrier as unknown as CompoundMode<TParentContext, TEvents, TDeps>;
+    return carrier as unknown as CompoundMode<TParentContext, TEvents, TPayload, TDeps>;
 }
