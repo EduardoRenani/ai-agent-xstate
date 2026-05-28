@@ -12,3 +12,10 @@ export type AgentContext = {
 };
 
 export type AgentEvents = { type: "MESSAGE"; text: string };
+
+// Compound-local context view seen by every child of the `socratic` compound
+// (spec 003 §`socratic`). `messages` is inherited live from the global context;
+// `evalRetries` is socratic-local telemetry that the global context never sees.
+export type SocraticContext = Pick<AgentContext, "messages"> & {
+    evalRetries: number;
+};

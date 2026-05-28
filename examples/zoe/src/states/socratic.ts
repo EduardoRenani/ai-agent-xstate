@@ -15,13 +15,16 @@ import type { AgentContext, AgentEvents } from "../types.js";
 export const socratic = defineCompoundMode<
     AgentContext,
     AgentEvents,
-    undefined,
+    { inherit: readonly ["messages"]; local: { evalRetries: number } },
     {
         teaching: typeof socraticTeaching;
         listening: typeof socraticListening;
         evaluating: typeof socraticEvaluating;
     }
 >({
+    // `evalRetries` is socratic-local telemetry (spec 003 §`socratic`): the
+    // global context never sees it; children read/write `messages` live.
+    context: { inherit: ["messages"] as const, local: { evalRetries: 0 } },
     initial: "teaching",
     modes: {
         teaching: socraticTeaching,

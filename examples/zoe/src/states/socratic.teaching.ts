@@ -3,7 +3,7 @@ import type { ModeOutput } from "@eduardorenani/atlasjs";
 
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";
-import type { AgentContext, AgentEvents } from "../types.js";
+import type { AgentEvents, SocraticContext } from "../types.js";
 
 const SYSTEM_PROMPT = [
     "Voce e Zoe, um assistente educacional.",
@@ -16,7 +16,7 @@ const SYSTEM_PROMPT = [
 ].join(" ");
 
 export const socraticTeaching = defineMode<
-    AgentContext,
+    SocraticContext,
     AgentEvents,
     { messages: Message[] }
 >({

@@ -3,7 +3,7 @@ import type { ModeOutput } from "@eduardorenani/atlasjs";
 
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";
-import type { AgentContext, AgentEvents } from "../types.js";
+import type { AgentEvents, SocraticContext } from "../types.js";
 
 const SYSTEM_PROMPT = [
     "Voce e Zoe, um assistente educacional avaliando a resposta do usuario a uma pergunta de contra-prova.",
@@ -31,10 +31,21 @@ const SYSTEM_PROMPT = [
 // (everything under `achieved`) was a workaround for the missing bucket.
 type EvalPayload = { understood: boolean };
 
-export const socraticEvaluating = defineMode<AgentContext, AgentEvents, EvalPayload>({
-    input: ({ context }) => ({ messages: context.messages }),
+// Circuit-breaker: once the compound-local `evalRetries` reaches this many
+// unusable model outputs, stop self-looping and bail out via `abandoned` so
+// the socratic loop terminates instead of retrying forever (spec 003
+// §`socratic`). The counter resets per socratic session via DD-018.
+const RETRY_LIMIT = 3;
+
+export const socraticEvaluating = defineMode<SocraticContext, AgentEvents, EvalPayload>({
+    input: ({ context }) => ({ messages: context.messages, evalRetries: context.evalRetries }),
     behavior: async ({ input }): Promise<ModeOutput<EvalPayload>> => {
-        const { messages } = input as { messages: Message[] };
+        const { messages, evalRetries } = input as { messages: Message[]; evalRetries: number };
+        
+        if (evalRetries >= RETRY_LIMIT) {
+            return { outcome: "abandoned", payload: { understood: false } };
+        }
+        
         const result = await chat(messages, SYSTEM_PROMPT);
         const last = result[result.length - 1];
         if (!last || last.role !== "assistant" || last.content === null) {
@@ -52,7 +63,7 @@ export const socraticEvaluating = defineMode<AgentContext, AgentEvents, EvalPayl
                 judgment = parsed.judgment;
             }
         } catch {
-            // Unparseable response → judgment stays "unknown" → wrapper retry.
+            return { outcome: "retry", payload: { understood: false } };
         }
 
         if (judgment === "understood") {
@@ -67,14 +78,14 @@ export const socraticEvaluating = defineMode<AgentContext, AgentEvents, EvalPayl
         return { outcome: "retry", payload: { understood: false } };
     },
     routes: {
-        // Spec 003 §`socratic.evaluating` "onDone guards": branch by
-        // `payload.understood` within achieved; abandoned bubbles out via
-        // the dedicated bucket; retry self-loops with no entry needed.
         achieved: [
             { when: (p) => p.understood, target: END },
             { target: "teaching" },
         ],
-        retry: [],
+        // retry self-loops the leaf (DD-014). The `assign` runs before the
+        // wrapper re-invokes `behavior`, bumping the compound-local counter —
+        // a retry-scoped write to `socratic`'s local slot (spec 008 §RetryEntry).
+        retry: { assign: ({ context }) => ({ evalRetries: context.evalRetries + 1 }) },
         abandoned: { target: END },
     },
 });

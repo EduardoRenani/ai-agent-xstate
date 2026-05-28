@@ -173,6 +173,15 @@ Ordered guard array — first match wins:
 ### `socratic`
 
 - **Goal:** Teach the user a concept and verify understanding via counter-proof.
+- **Compound-local context:** `inherit: ["messages"]` (children read/write the
+  global transcript live) + `local: { evalRetries: number }` (init `0` on entry,
+  reset on re-entry per DD-018). Demonstrates a retry-scoped `assign`
+  (spec 008 §`RetryEntry`) writing to a compound-local slot. `evalRetries`
+  drives the verification circuit-breaker (see §`socratic.evaluating`): once it
+  reaches `RETRY_LIMIT` (3), an otherwise-unusable model output is mapped to
+  `abandoned` instead of `retry`, so the loop terminates. The counter resets to
+  `0` whenever `socratic` is exited and re-entered (DD-018 reset-on-re-entry) —
+  no explicit reset code is needed; each socratic session starts fresh.
 
 #### `socratic.teaching` (initial)
 
@@ -196,12 +205,14 @@ Ordered guard array — first match wins:
   - `"understood"`     → `{ outcome: "achieved",  payload: { understood: true  } }`
   - `"not_understood"` → `{ outcome: "achieved",  payload: { understood: false } }`
   - `"abandoned"`      → `{ outcome: "abandoned", payload: { understood: false } }`
-  - Anything else (invalid JSON, transport error, unknown value) → `{ outcome: "retry" }`. The wrapper self-loops `evaluating` per DD-014.
+  - Anything else (invalid JSON, transport error, unknown value) → `{ outcome: "retry" }`, **unless** the compound-local `evalRetries` has already reached `RETRY_LIMIT` (3), in which case it maps to `{ outcome: "abandoned", payload: { understood: false } }` to break the loop. The behavior reads `evalRetries` via `input` (routing `when` is payload-only and cannot see context, so the cap lives in `behavior` per spec 005). While under the limit, the wrapper self-loops `evaluating` per DD-014, bumping `evalRetries` on each retry.
 - **`onDone` guards (ordered, first match wins):**
   - `outcome === "achieved" && payload.understood`  → `done`. No assign.
   - `outcome === "achieved" && !payload.understood` → `teaching`. No assign.
   - `outcome === "abandoned"`                       → `done`. No assign.
-  - `outcome === "retry"` → no target (wrapper self-loop).
+  - `outcome === "retry"` → no target (wrapper self-loop), with **`assign:
+    evalRetries + 1`** writing the compound-local slot before the wrapper
+    re-invokes `behavior`. Analytical contract holds: `messages` untouched.
 - **State file:** `src/states/socratic.evaluating.state.ts`.
 
 #### `socratic.done` (final)
@@ -228,13 +239,16 @@ Ordered guard array — first match wins:
 
 ## Context
 
-No changes to context type:
-
 ```ts
 {
     messages: Message[]
 }
 ```
+
+`socratic` declares a **compound-local** `evalRetries: number` (see §`socratic`).
+It is scoped to the socratic subtree via the wrapper's lexical scoping
+(spec 004 §"Lexical scoping of context", DD-018) and is **not** part of the
+global context above — `greetings`, `classifying`, `improvising` never see it.
 
 ## File Map
 
@@ -270,7 +284,6 @@ No changes to context type:
 ## Out of Scope
 
 - More than three modes (only `greetings`, `socratic`, and `improvising` for now; `classifying` is extensible).
-- Maximum retry limit for socratic verification.
 - Socratic tools (socratic uses chat only for now).
 - Streaming responses.
 - Mode persistence across sessions.
