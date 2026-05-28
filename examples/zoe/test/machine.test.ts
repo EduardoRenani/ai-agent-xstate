@@ -43,7 +43,7 @@ function createTestActor(options: {
                 classifyIndex++;
                 return result;
             }),
-            greetingsThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            greetingsNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.greetingsResults ?? [];
                 const result = results[greetingsIndex] ?? results[results.length - 1];
                 greetingsIndex++;
@@ -61,7 +61,7 @@ function createTestActor(options: {
                 socraticEvaluatingIndex++;
                 return result;
             }),
-            improvisingThinkingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
+            improvisingNode: fromPromise<MessagesResult, { messages: Message[] }>(async () => {
                 const results = options.improvisingResults ?? [];
                 const result = results[improvisingIndex] ?? results[results.length - 1];
                 improvisingIndex++;
@@ -450,6 +450,49 @@ describe("agentMachine", () => {
             { role: "assistant", content: "Sao 10:30 da manha!" },
         ]);
 
+        actor.stop();
+    });
+
+    it("recovers to listening when improvising's chat() throws (error route logs, no crash)", async () => {
+        // Run the REAL improvising behavior (actor NOT stubbed) so the error
+        // route executes. chat() rejects → invoke onError → the leaf's
+        // `error` route logs and routes to the sibling `classifying`, which
+        // idles to `listening`. Pre-flatten this re-threw above the compound
+        // and dropped the log (DD-026); reaching `listening` proves recovery.
+        vi.mocked(chat).mockRejectedValue(new Error("LLM transport boom"));
+        const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+        let classifyIndex = 0;
+        const classifyResults: ClassifyResult[] = [
+            { outcome: "achieved", payload: { intent: "improvise" } },
+            { outcome: "achieved", payload: { intent: "none" } },
+        ];
+        const testMachine = agentMachine.provide({
+            actors: {
+                classifyingNode: fromPromise<ClassifyResult, { messages: Message[] }>(async () => {
+                    const r = classifyResults[classifyIndex] ?? classifyResults[classifyResults.length - 1];
+                    classifyIndex++;
+                    return r;
+                }),
+                // improvisingNode left real on purpose.
+            },
+        });
+        const actor = createActor(testMachine);
+        actor.start();
+
+        actor.send({ type: "MESSAGE", text: "que horas sao?" });
+        await waitForReady(actor);
+
+        const snapshot = actor.getSnapshot();
+        expect(snapshot.matches("listening")).toBe(true);
+        // The error route's assign actually ran its console.error side effect.
+        expect(errorSpy).toHaveBeenCalled();
+        // chat() never returned, so no assistant reply was appended.
+        expect(snapshot.context.messages).toEqual([
+            { role: "user", content: "que horas sao?" },
+        ]);
+
+        errorSpy.mockRestore();
         actor.stop();
     });
 

@@ -1,21 +1,44 @@
-import { defineCompoundMode } from "@eduardorenani/atlasjs";
+import { defineMode } from "@eduardorenani/atlasjs";
+import type { ModeOutput } from "@eduardorenani/atlasjs";
 
-import { greetingsThinking } from "./greetings.thinking.js";
+import { chat } from "../llm-client.js";
+import type { Message } from "../llm-client.js";
 import type { AgentContext, AgentEvents } from "../types.js";
 
-// Single-substate compound: thinking → END → outer routes back to
-// "classifying". Wraps `greetingsThinking` so the leaf can target END (the
-// only way to exit a compound) instead of a sibling at the agent root.
-export const greetings = defineCompoundMode<
+const SYSTEM_PROMPT = [
+    "Voce e Zoe, um assistente de proposito geral.",
+    "Cumprimente o usuario em portugues do Brasil de forma amigavel e direta.",
+    "Apresente-se brevemente pelo nome.",
+    "Mantenha a saudacao curta (1-2 frases).",
+    "IMPORTANTE: Apenas cumprimente. Se o usuario fez uma pergunta ou pedido junto da saudacao, ignore completamente — nao responda, nao mencione, nao reconheca. Outro modulo cuidara disso.",
+].join(" ");
+
+// Single-shot leaf mode (spec 003 §`greetings`). It has no MESSAGE-handling
+// substate, so wrapping it in a compound bought nothing — the leaf routes its
+// `achieved` outcome straight to the sibling `classifying`, exactly as
+// `classifying` routes to its sibling modes.
+export const greetings = defineMode<
     AgentContext,
     AgentEvents,
-    undefined,
-    { thinking: typeof greetingsThinking }
+    { messages: Message[] }
 >({
-    initial: "thinking",
-    modes: { thinking: greetingsThinking },
+    input: ({ context }) => ({ messages: context.messages }),
+    behavior: async ({ input }): Promise<ModeOutput<{ messages: Message[] }>> => {
+        const { messages } = input as { messages: Message[] };
+        const replied = await chat(messages, SYSTEM_PROMPT);
+        const last = replied[replied.length - 1];
+        if (last && last.role === "assistant" && last.content !== null) {
+            console.log(`\n${last.content}\n`);
+        }
+        return { outcome: "achieved", payload: { messages: replied } };
+    },
     routes: {
-        achieved: { target: "classifying" },
+        achieved: {
+            target: "classifying",
+            assign: ({ context, payload }) => ({
+                messages: [...context.messages, ...payload.messages],
+            }),
+        },
         retry: [],
         abandoned: { target: "classifying" },
     },

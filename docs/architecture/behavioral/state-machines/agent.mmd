@@ -3,7 +3,7 @@ title: State Machine — Zoe Agent
 ---
 %% Spec: behavioral-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-21
+%% Atualizado: 2026-05-28
 %% Fonte: examples/zoe/src/machine.ts, examples/zoe/src/states/*.ts (built with packages/atlas/)
 %% Componente C4: machine (c2-container.mmd)
 %% Container C4: system (c2-container.mmd)
@@ -18,12 +18,7 @@ stateDiagram-v2
     classifying --> listening: onDone [intent=none]
     classifying --> improvising: onDone [default]
 
-    state greetings {
-        [*] --> gThinking
-        gThinking --> gDone: onDone / assign messages
-        gDone --> [*]
-    }
-    greetings --> classifying: parent.onDone
+    greetings --> classifying: onDone [achieved] / assign messages, print
 
     state socratic {
         [*] --> sTeaching
@@ -36,13 +31,8 @@ stateDiagram-v2
     }
     socratic --> classifying: parent.onDone
 
-    state improvising {
-        [*] --> iThinking
-        iThinking --> iDone: onDone / assign messages, print
-        iThinking --> iDone: onError / print error
-        iDone --> [*]
-    }
-    improvising --> classifying: parent.onDone
+    improvising --> classifying: onDone [achieved] / assign messages, print
+    improvising --> classifying: onError / assign messages, log error
 
     note right of classifying
         Invokes classifyingMode.

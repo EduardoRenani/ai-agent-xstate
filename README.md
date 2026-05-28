@@ -87,7 +87,7 @@ flowchart LR
 ```mermaid
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-21
+%% Atualizado: 2026-05-28
 %% Fonte: examples/zoe/src/index.ts, examples/zoe/src/machine.ts, examples/zoe/src/llm-client.ts, examples/zoe/src/states/*.ts
 sequenceDiagram
     participant user as [ENTRY] User
@@ -101,12 +101,12 @@ sequenceDiagram
     Note over machine: listening → classifying (appendUserMessage)
     machine->>machine: invoke classifyingMode
     Note over machine: first-message short-circuit: intent=greetings (no LLM call)
-    Note over machine: classifying → greetings.thinking
-    machine->>client: invoke greetingsThinkingMode(messages, GREETINGS_PROMPT)
+    Note over machine: classifying → greetings
+    machine->>client: invoke greetingsMode(messages, GREETINGS_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
     client-->>machine: ModeOutput of messages (outcome=achieved)
-    Note over machine: greetings.thinking → greetings.done (assign, print) → classifying
+    Note over machine: greetings → classifying (assign, print)
     machine->>client: invoke classifyingMode(messages, CLASSIFIER_PROMPT)
     client->>api: chat.completions.create
     api-->>client: ModeOutput of intent=none
@@ -136,11 +136,11 @@ sequenceDiagram
             Note over machine: socratic.evaluating → socratic.done → classifying
 
         else intent = improvise
-            Note over machine: classifying → improvising.thinking
-            machine->>client: invoke improvisingThinkingMode (with tools)
+            Note over machine: classifying → improvising
+            machine->>client: invoke improvisingMode (with tools)
             client->>api: chat.completions.create (may iterate on tool_calls)
             api-->>client: ModeOutput of messages (achieved)
-            Note over machine: improvising.thinking → improvising.done → classifying
+            Note over machine: improvising → classifying (assign, print)
 
         else intent = none
             Note over machine: classifying → listening (root, no mode invoked)
@@ -195,4 +195,4 @@ Observations from M1 — building Zoe directly on XState, before Atlas existed. 
 
 ### What doesn't
 
-**Invoke actors are separated from the states they belong to.** The only way to run async code (LLM calls, tool execution) is via `invoke`, which references an actor declared in `setup()`. The actor definition lives at the top of the file; the state that invokes it lives inside `createMachine()`. In an AI agent, a state's behavior *is* its invoked actor — `greetings.thinking` *is* `greetingsThinkingNode`. These are conceptual pairs forced apart by the API. We mitigated this with a naming convention (DD-008: actor name mirrors state path + `Node` suffix) and dedicated state files (DD-009), but the indirection remains.
+**Invoke actors are separated from the states they belong to.** The only way to run async code (LLM calls, tool execution) is via `invoke`, which references an actor declared in `setup()`. The actor definition lives at the top of the file; the state that invokes it lives inside `createMachine()`. In an AI agent, a state's behavior *is* its invoked actor — `improvising` *is* `improvisingNode`. These are conceptual pairs forced apart by the API. We mitigated this with a naming convention (DD-008: actor name mirrors state path + `Node` suffix) and dedicated state files (DD-009), but the indirection remains.

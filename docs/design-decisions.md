@@ -36,7 +36,7 @@
 
 **Alternative — interruptible state:** When the agent should accept new input during processing (e.g. urgent/critical messages that override the current task), use a single state with `invoke` + `on.MESSAGE` as a self-transition. The new message cancels the in-flight invoke and restarts it. This is a deliberate design choice, not a default.
 
-**Decision for one-shot modes (`greetings`, `improvising`):** These modes use thinking → done (final) without an internal listening state. The root `listening` is a sibling state, not a parent — events do not reach the mode's invoke states. Protection against interruption is preserved by XState's sibling isolation: when the machine is in `improvising.thinking`, the root `listening` is inactive and `MESSAGE` events are not handled.
+**Decision for one-shot modes (`greetings`, `improvising`):** ~~These modes use thinking → done (final) without an internal listening state.~~ **Superseded by DD-026** — these are now leaf modes (no internal substate at all), since a single-substate compound that never handles `MESSAGE` is redundant. The interruption-safety argument still holds: the root `listening` is a sibling, not a parent, so `MESSAGE` events never reach a one-shot mode's invoke while it runs (XState sibling isolation).
 
 **Decision for multi-turn modes (`socratic`):** Uses thinking/listening internally because the mode requires multiple exchanges with the user. The internal `listening` accepts `MESSAGE` and continues within the mode. The root `listening` remains inactive while inside the mode.
 
@@ -350,3 +350,15 @@ Lowering: for every compound whose subtree references `target: END`, the wrapper
 - **Single global `$end` final substate at the compound, discriminate via a payload field.** Reintroduces the same payload-encoded dispatch the spec exists to eliminate, just moved one level up. The whole point is that the *bucket the child END'd from* is the wire-level signal — no payload encoding needed for the outcome itself.
 
 **Supersedes:** Nothing. DD-014 stays in force (retry as self-loop, no target). DD-017 (END is injected per-compound, only when referenced) generalizes: instead of one `$end` per compound, the wrapper injects one final substate per outcome bucket that the subtree actually references. The "minimal emitted machine" property is preserved per-bucket.
+
+## 026 — Single-substate one-shot modes are leaves, not compounds
+
+**Date:** 2026-05-28
+
+**Rule:** A mode whose only substate does not handle `MESSAGE` is expressed as a leaf `Mode`, not as a single-substate `CompoundMode`. The leaf routes its outcome buckets directly to root siblings. Applies to `greetings` and `improvising`. `socratic` stays a compound because it has genuine multi-turn substates (`teaching` / `listening` / `evaluating`).
+
+**Rationale:** The compound wrapper existed only so the inner leaf could use `target: END` — the sole way to exit a compound. But a *top-level* leaf's siblings already **are** the root modes, so it can write `target: "classifying"` directly; `classifying` itself routes to sibling modes this way. For `greetings`/`improvising` the wrapper bought nothing and cost three things: an extra state-value level (`{ greetings: "thinking" }`), an extra file (`*.thinking.ts`), and an actor-name hop (`greetingsThinkingNode`). Flattening removes all three with no behavioral change to the conversation flow.
+
+**Side fix (`improvising` error path):** Pre-flatten, the child routed `routes.error.target = END` while the compound omitted `routes.error`. Per DD-017 / `injectEnd.ts`, that re-throws above the compound and **drops the entry's `assign`** — so the `console.error` never ran and the agent crashed on an LLM transport error. Both spec 003 §`improvising` and the code comment claimed "log + recover to classifying", which was never the compiled behavior. As a root leaf, `improvising` now routes `error → "classifying"` (a sibling), so the documented recover-and-log behavior is finally what runs.
+
+**Supersedes:** the "one-shot modes use thinking → done (final)" decision in DD-003 (its multi-turn thinking/listening guidance for `socratic` stays in force). DD-008 (actor name mirrors path) is unchanged and auto-applies — shorter paths yield `greetingsNode` / `improvisingNode`. DD-009 (one state file per mode) is unchanged in spirit; `greetings`/`improvising` are now a single `<mode>.ts` instead of `<mode>.thinking.ts`.

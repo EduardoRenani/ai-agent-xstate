@@ -1,6 +1,6 @@
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-21
+%% Atualizado: 2026-05-28
 %% Fonte: examples/zoe/src/index.ts, examples/zoe/src/machine.ts, examples/zoe/src/llm-client.ts, examples/zoe/src/states/*.ts
 sequenceDiagram
     participant user as [ENTRY] User
@@ -14,12 +14,12 @@ sequenceDiagram
     Note over machine: listening → classifying (appendUserMessage)
     machine->>machine: invoke classifyingMode
     Note over machine: first-message short-circuit: intent=greetings (no LLM call)
-    Note over machine: classifying → greetings.thinking
-    machine->>client: invoke greetingsThinkingMode(messages, GREETINGS_PROMPT)
+    Note over machine: classifying → greetings
+    machine->>client: invoke greetingsMode(messages, GREETINGS_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
     client-->>machine: ModeOutput of messages (outcome=achieved)
-    Note over machine: greetings.thinking → greetings.done (assign, print) → classifying
+    Note over machine: greetings → classifying (assign, print)
     machine->>client: invoke classifyingMode(messages, CLASSIFIER_PROMPT)
     client->>api: chat.completions.create
     api-->>client: ModeOutput of intent=none
@@ -49,11 +49,11 @@ sequenceDiagram
             Note over machine: socratic.evaluating → socratic.done → classifying
 
         else intent = improvise
-            Note over machine: classifying → improvising.thinking
-            machine->>client: invoke improvisingThinkingMode (with tools)
+            Note over machine: classifying → improvising
+            machine->>client: invoke improvisingMode (with tools)
             client->>api: chat.completions.create (may iterate on tool_calls)
             api-->>client: ModeOutput of messages (achieved)
-            Note over machine: improvising.thinking → improvising.done → classifying
+            Note over machine: improvising → classifying (assign, print)
 
         else intent = none
             Note over machine: classifying → listening (root, no mode invoked)

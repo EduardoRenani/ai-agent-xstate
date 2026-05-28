@@ -17,14 +17,9 @@ classifying
   onDone [payload.intent=none]       → listening
   onDone [default]                   → improvising
 
-greetings (compound):
-├── thinking (initial)
-│   invoke: greetingsThinkingNode
-│   onDone → done (assign payload.messages)
-│
-└── done (final)
-
-  onDone → classifying
+greetings (leaf):
+  invoke: greetingsNode
+  onDone [achieved] → classifying (assign payload.messages)
 
 socratic (compound):
 ├── teaching (initial)
@@ -45,15 +40,10 @@ socratic (compound):
 
   onDone → classifying
 
-improvising (compound):
-├── thinking (initial)
-│   invoke: improvisingThinkingNode
-│   onDone → done (assign payload.messages)
-│   onError → done (print error)
-│
-└── done (final)
-
-  onDone → classifying
+improvising (leaf):
+  invoke: improvisingNode
+  onDone [achieved] → classifying (assign payload.messages)
+  onError           → classifying (print error)
 ```
 
 ## Key Design Points
@@ -84,9 +74,14 @@ The previous architecture used `PARTIALLY_RESPONDED` as a raised event to signal
 
 ### `greetings` as a mode
 
-`greetings` is a compound state like any other mode, with `thinking` → `done`. The classifier routes to it on first message. After greeting, the mode exits and the classifier handles any follow-up content.
+`greetings` is a single-shot **leaf** mode: it runs `greetingsNode`, appends the
+reply, and routes straight back to `classifying` on `achieved` — no internal
+substates (it has no `MESSAGE`-handling state, so a compound wrapper bought
+nothing; see §`greetings` for the flatten rationale). The classifier routes to
+it on first message. After greeting, the mode exits and the classifier handles
+any follow-up content.
 
-The `greetingsThinkingNode` actor no longer returns `needsFollowUp` — that responsibility moves to the classifier. The actor returns `ModeOutput<{ messages: Message[] }>` with outcome `"achieved"`, same contract as other mode actors.
+The `greetingsNode` actor no longer returns `needsFollowUp` — that responsibility moves to the classifier. The actor returns `ModeOutput<{ messages: Message[] }>` with outcome `"achieved"`, same contract as other mode actors.
 
 ### Modes have internal `listening` states
 
@@ -164,11 +159,16 @@ Ordered guard array — first match wins:
 ### `greetings`
 
 - **Goal:** Greet the user and introduce Atlas.
-- **Actor:** `greetingsThinkingNode` (renamed from `greetingsNode`).
+- **Shape:** Leaf Mode (`defineMode`). It has no `MESSAGE`-handling substate, so
+  the previous single-substate compound (`thinking` → `done`) was redundant and
+  has been flattened: the leaf routes its `achieved` outcome straight to the
+  sibling `classifying` (exactly as `classifying` itself routes to sibling
+  modes). See [[../design-decisions.md]] for the flatten decision.
+- **Actor:** `greetingsNode` (leaf actor name = `<path>Node`, DD-008).
 - **System prompt:** Instructs Atlas to greet in Portuguese, introduce itself briefly. Returns a text response (no JSON — the `needsFollowUp` classification is now the classifier's job).
 - **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome always `"achieved"`).
-- **`thinking.onDone`:** Assign `payload.messages` to context, transition to `done`.
-- **State file:** `src/states/greetings.thinking.state.ts` (renamed from `greetings.state.ts` per DD-009 — now references the inner state path `greetings.thinking`).
+- **`achieved` route:** Assign `payload.messages` to context, transition to `classifying`.
+- **State file:** `src/states/greetings.ts` (the single leaf; the former `greetings.thinking.ts` is removed).
 
 ### `socratic`
 
@@ -222,12 +222,15 @@ Ordered guard array — first match wins:
 ### `improvising`
 
 - **Goal:** Answer the user's question or perform a task.
-- **Actor:** `improvisingThinkingNode` (renamed from `improviseThinkingNode`).
-- **Same behavior as current `improvise.thinking`** — calls `chat()` with general-purpose system prompt and tools. The tool loop is internal to the actor (spec 002).
+- **Shape:** Leaf Mode (`defineMode`), flattened from the former single-substate
+  compound for the same reason as `greetings` (no `MESSAGE`-handling substate).
+  Routes `achieved`/`error` straight to the sibling `classifying`.
+- **Actor:** `improvisingNode` (leaf actor name = `<path>Node`, DD-008).
+- **Same behavior** — calls `chat()` with general-purpose system prompt and tools. The tool loop is internal to the actor (spec 002).
 - **Returns:** `ModeOutput<{ messages: Message[] }>` (outcome always `"achieved"`).
-- **`thinking.onDone`:** Assign `payload.messages` to context, transition to `done`.
-- **`thinking.onError`:** Print error, transition to `done`.
-- **State file:** `src/states/improvising.thinking.state.ts` (renamed from `improvise.thinking.state.ts` per DD-008).
+- **`achieved` route:** Assign `payload.messages` to context, transition to `classifying`.
+- **`error` route:** Print the error (the `assign`'s only side effect), transition to `classifying` — the agent recovers and lets the classifier route the next turn. (This is a deliberate fix: the pre-flatten code routed the child's `error` to `END` while the compound omitted `routes.error`, which actually **re-threw above the compound and dropped the log** — `injectEnd.ts` re-throw path. The leaf now routes `error` to a sibling, so the recover-and-log behavior this section always described is finally what runs.)
+- **State file:** `src/states/improvising.ts` (the single leaf; the former `improvising.thinking.ts` is removed).
 
 ## Events
 
@@ -259,10 +262,10 @@ global context above — `greetings`, `classifying`, `improvising` never see it.
 | `src/types.ts` | New — exports `ModeOutput` type |
 | `src/machine.ts` | Restructure: remove `idle`, `improvise`. Add `listening`, `classifying`, `greetings`, `socratic`, `improvising` as top-level states. Remove `PARTIALLY_RESPONDED` from events. Register new actors. All actors return `ModeOutput<T>`. |
 | `src/states/classifying.state.ts` | New — classifier actor |
-| `src/states/greetings.thinking.state.ts` | Renamed from `greetings.state.ts`. Actor returns `Message[]` instead of `{ greeting, needsFollowUp }`. |
+| `src/states/greetings.ts` | Leaf Mode (`defineMode`). Flattened from the former single-substate compound — `greetings.thinking.ts` removed; the leaf routes `achieved` → `classifying`. Actor returns `Message[]` instead of `{ greeting, needsFollowUp }`. |
 | `src/states/socratic.teaching.state.ts` | New — socratic teaching actor |
 | `src/states/socratic.evaluating.state.ts` | New — socratic evaluation actor |
-| `src/states/improvising.thinking.state.ts` | Renamed from `improvise.thinking.state.ts` (same logic, new name per DD-008) |
+| `src/states/improvising.ts` | Leaf Mode (`defineMode`). Flattened from the former single-substate compound — `improvising.thinking.ts` removed; the leaf routes `achieved` → `classifying` and `error` → `classifying` (recover + log). |
 | `src/states/greetings.state.ts` | Deleted (replaced by `greetings.thinking.state.ts`) |
 | `src/states/improvise.thinking.state.ts` | Deleted (replaced by `improvising.thinking.state.ts`) |
 | `src/index.ts` | No changes (uses `snapshot.can()`, agnostic to state names) |
