@@ -10,3 +10,4 @@
 | 006 | Modes, Not States       | Done   |
 | 007 | Release & Distribution  | Draft  |
 | 008 | Compound Mode Routes    | Done   |
+| 009 | Snapshot-Aware Rehydration and Atlas Actor Surface | Done   |

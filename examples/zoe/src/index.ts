@@ -1,45 +1,46 @@
+// Thin terminal loop. Each iteration loads the session snapshot from disk,
+// runs one turn, writes the new snapshot back. The actor is constructed and
+// disposed inside `runTurn`; the only thing that crosses turns is the JSON
+// payload on disk — same shape as a production HTTP / queue consumer storing
+// session state in a DB. Compound `local` slots (e.g. socratic's
+// `evalRetries`) survive across turns because the snapshot round-trips
+// through JSON.stringify / JSON.parse, not because anything is held in
+// memory.
 import "dotenv/config";
 import * as readline from "node:readline/promises";
-import { createAgentActor } from "./machine.js";
 
-const actor = createAgentActor();
-actor.start();
+import { loadSession, saveSession } from "./sessionStore.js";
+import { runTurn } from "./turn.js";
+
+// Fixed id keeps the example single-tenant. A real host would derive this
+// from the request (user id, channel id, etc.).
+const SESSION_ID = "default";
 
 const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
 });
 
-function waitForReady(): Promise<void> {
-    return new Promise((resolve) => {
-        if (actor.getSnapshot().can({ type: "MESSAGE", text: "" })) {
-            resolve();
-            return;
-        }
-        const sub = actor.subscribe((snapshot) => {
-            if (snapshot.can({ type: "MESSAGE", text: "" })) {
-                sub.unsubscribe();
-                resolve();
-            }
-        });
-    });
-}
-
 async function main() {
-    console.log("AI Agent started. Type a message to begin.\n");
+    const resumed = await loadSession(SESSION_ID);
+    if (resumed) {
+        console.log(`Resumed session "${SESSION_ID}" from disk.\n`);
+    } else {
+        console.log("AI Agent started. Type a message to begin.\n");
+    }
 
     while (true) {
         const line = await rl.question("> ");
         const text = line.trim();
         if (!text) continue;
 
-        actor.send({ type: "MESSAGE", text });
-        await waitForReady();
+        const previous = await loadSession(SESSION_ID);
+        const next = await runTurn(text, previous);
+        await saveSession(SESSION_ID, next);
     }
 }
 
 rl.on("close", () => {
-    actor.stop();
     process.exit(0);
 });
 
