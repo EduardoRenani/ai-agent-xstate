@@ -235,7 +235,7 @@ export const zoeMachine = defineAgent({
 });
 ```
 
-`defineAgent.modes` accepts only `Mode` and `CompoundMode` — same constraint as `defineCompoundMode.modes`. The root `listening` is a passive `defineMode`; there is no place in the wrapper where raw XState state config is accepted. `defineAgent` returns a standard XState `AnyStateMachine` (the value `xstate.createMachine` returns), so anything that consumes an XState machine today — `createActor`, the inspector API, tests — keeps working unchanged. `createAgentActor` (today in `src/machine.ts`; under `examples/zoe/src/` after the restructure) does not change.
+`defineAgent.modes` accepts only `Mode` and `CompoundMode` — same constraint as `defineCompoundMode.modes`. The root `listening` is a passive `defineMode`; there is no place in the wrapper where raw XState state config is accepted. `defineAgent` returns a standard XState `AnyStateMachine` (the value `xstate.createMachine` returns), so anything that consumes an XState machine today — `createActor`, the inspector API, tests — keeps working unchanged. ~~`createAgentActor` (today in `src/machine.ts`; under `examples/zoe/src/` after the restructure) does not change.~~ **Superseded by spec [`009`](009-snapshot-aware-rehydration.md):** the host-facing actor boot is now `startAgent` (re-exported from `@eduardorenani/atlasjs`), which wraps `createActor` and accepts a persisted snapshot. The `createAgentActor` helper has been retired from `examples/zoe/`.
 
 ### Target resolution
 
@@ -727,7 +727,7 @@ What protects forward-compatibility: streaming chunks are **out-of-band side eff
 
 ### S5 — Observability
 
-Every actor name is derivable from the state path (DD-008 as invariant). The wrapper exposes this mapping (`getActorPath(actor)` or similar) so an inspector can label transitions with the human-readable mode path. The existing `createAgentActor` inspector loop (today in `src/machine.ts`, under `examples/zoe/src/` after the restructure) keeps working; new features get richer data without breaking it.
+Every actor name is derivable from the state path (DD-008 as invariant). The wrapper exposes this mapping (`getActorPath(actor)` or similar) so an inspector can label transitions with the human-readable mode path. ~~The existing `createAgentActor` inspector loop (today in `src/machine.ts`, under `examples/zoe/src/` after the restructure) keeps working; new features get richer data without breaking it.~~ **Updated by spec [`009`](009-snapshot-aware-rehydration.md):** observation now happens through `startAgent({ inspect })`. The inspect callback receives Atlas-vocabulary events (`{ type: "transition", from, to, context }`) where `from` / `to` are dot-joined mode paths formatted internally by `formatModePath` — the inspector loop's job, lifted into the wrapper.
 
 ## Monorepo Restructure
 
@@ -844,7 +844,7 @@ The migration is a single PR — splitting it would leave Zoe in a half-wrapped 
    - Omitting `context` keeps the full enclosing context visible: a `CompoundMode` without `context` has children typed against the same context as the parent (or the agent root). Confirmed by the existing migrated Zoe modes — they remain unchanged when no narrowing is desired.
    - The `when` and `assign` callbacks inside `routes.achieved` / `retry` / `abandoned` see `payload` typed as `TPayload`; the callbacks inside `routes.error` see `error: unknown` (typed by `ErrorEntry<C>`, not `ExitEntry<C, P>`). `context` is always typed as `TContext` (type-only test).
 4. **Diff in `examples/zoe/src/machine.ts`.** After migration, `machine.ts` is materially shorter: no actor registrations, no inline `assign({ messages: ... })` duplications, no `event.output` casts, no `done: { type: "final" }` declarations. The diff itself is part of verification — if the file did not shrink, the wrapper did not earn its place.
-5. **No XState API leakage in user code.** A migrated Zoe source file imports from `atlas` only. Importing anything from `xstate` directly inside `examples/zoe/src/**` — or seeing a raw `{ type: "final" }`, `fromPromise(...)`, or `assign(...)` call at any user-code call site — is a wrapper bug, not an escape hatch. `defineAgent.actions[name]` receives a plain callback `({ context, event }) => Partial<TContext>`; the `assign(...)` envelope is applied by the wrapper.
+5. **No XState API leakage in user code.** A migrated Zoe source file imports from `atlas` only. Importing anything from `xstate` directly inside `examples/zoe/src/**` — or seeing a raw `{ type: "final" }`, `fromPromise(...)`, or `assign(...)` call at any user-code call site — is a wrapper bug, not an escape hatch. `defineAgent.actions[name]` receives a plain callback `({ context, event }) => Partial<TContext>`; the `assign(...)` envelope is applied by the wrapper. **Closed by spec [`009`](009-snapshot-aware-rehydration.md):** the actor boot (`createActor`) and the observation seam (`@xstate.snapshot` inspect events, nested `snapshot.value` walking) were the last two XState surfaces still exposed at the host call site. Spec 009 lifts both behind `startAgent` and an Atlas-vocabulary `inspect` callback, retiring `createAgentActor` from `examples/zoe/`.
 
 ## Out of Scope
 

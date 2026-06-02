@@ -29,9 +29,9 @@ User-facing docs: [`docs/USAGE.md`](docs/USAGE.md). Spec index: [`docs/specs/REA
 
 Three constructors (`defineMode`, `defineCompoundMode`, `defineAgent`) are the only way to express the shape. The type system rejects anything that doesn't fit: active+passive mixing in the same leaf, modes missing outcomes, cross-compound targets, retry with arbitrary target.
 
-State machines (XState v5) live under the hood — atlas compiles to one to get the formal carrier (transitions, hierarchy, snapshot/replay) without exposing it as the API surface.
+State machines (XState v5) live under the hood — atlas compiles to one to get the formal carrier (transitions, hierarchy, snapshot/replay) without exposing it as the API surface. Hosts boot the agent via `startAgent(machine, { snapshot?, inspect? })` and never import from `xstate` directly. The actor returned exposes `send` / `stop` / `getSnapshot`; `getSnapshot` produces an opaque `AgentSnapshot` that round-trips through JSON storage and rehydrates the full state on the next turn — compound `local` slots included.
 
-Spec: [`docs/specs/004-xstate-agent-wrapper.md`](docs/specs/004-xstate-agent-wrapper.md).
+Specs: [`004-xstate-agent-wrapper.md`](docs/specs/004-xstate-agent-wrapper.md) (the API contract) and [`009-snapshot-aware-rehydration.md`](docs/specs/009-snapshot-aware-rehydration.md) (the `startAgent` actor surface + multi-turn persistence contract).
 
 ## Zoe (example agent)
 

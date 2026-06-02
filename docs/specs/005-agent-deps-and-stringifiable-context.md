@@ -77,6 +77,8 @@ The exported `JsonObject` / `JsonValue` / `JsonPrimitive` / `JsonArray` stay ava
 
 `TPayload` (on `defineMode`) is **not** constrained to `JsonValue`. Reason: the payload is the actor's return value, not context. It only enters context through `routes[*].assign`, whose return type is `Partial<TContext>` — already constrained. Constraining `TPayload` would force discriminated-union payloads (which sometimes carry `Error` instances or other non-JSON values used by `when` predicates) through unnecessary widening.
 
+> **Forward pointer to spec [`009`](009-snapshot-aware-rehydration.md) §Persistence Contract:** the `JsonCompatible` constraint on `TContext` and on `CompoundContext.local` is what makes the multi-turn rehydration contract possible — the `AgentSnapshot` returned by `actor.getSnapshot()` round-trips through `JSON.stringify` / `JSON.parse` precisely because every persisted field is `JsonCompatible` by type contract. Compound `local` is the slot whose docstring used to say "persisted as part of the root context"; spec 009 turns that promise into a tested contract (the persisted slot wins over the compound's `entry` reset on snapshot restore, while DD-018's intra-turn reset semantics still applies).
+
 `TEvents` is **not** constrained. Events are transient; only what `actions` / `assign` write to `TContext` is persisted, and that path is already type-checked against `Partial<TContext>`.
 
 `TDeps` is **not** constrained beyond `Record<string, unknown>`. Deps hold runtime objects with methods (DB driver, logger) — by definition not JSON-serializable. They live outside context.
