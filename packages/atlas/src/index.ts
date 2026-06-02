@@ -35,5 +35,6 @@ export type {
     AgentActor,
     AgentSnapshot,
     AgentInspectionEvent,
+    AgentErrorInfo,
     StartAgentOptions,
 } from "./types.ts";

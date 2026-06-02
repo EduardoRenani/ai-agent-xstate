@@ -2,11 +2,17 @@
 //
 // Spec: docs/specs/009-snapshot-aware-rehydration.md
 //        §`startAgent` + §Persistence Contract + §Mapping
+//       docs/specs/010-error-channel.md
+//        §Public API Changes + §Behavior Contract + §Mapping
 //
 // Wraps XState's `createActor(...).start()` so:
 //   1. A persisted `AgentSnapshot` survives compound-`local` reset on entry
-//      (the entire point of issue #15).
-//   2. Hosts no longer import from `xstate` directly (issue #12).
+//      (spec 009 / issue #15).
+//   2. Hosts no longer import from `xstate` directly (spec 009 / issue #12).
+//   3. Rejections that escape the machine's declarative recovery
+//      (`routes.error`) surface to a typed host callback via
+//      `options.onError`, instead of becoming uncaught process-level errors
+//      (spec 010 / P14).
 //
 // This file is the ONLY place inside `packages/atlas/src` allowed to import
 // `createActor`. The wrapper hides it; nothing else in user code or in the
@@ -46,6 +52,7 @@ export function startAgent<TContext, TEvents extends { type: string }>(
 ): AgentActor<TContext, TEvents> {
     let previousPath: string | undefined;
     const userInspect = options?.inspect;
+    const userOnError = options?.onError;
 
     const xstateActor = createActor(agent, {
         snapshot: options?.snapshot?.persisted as Snapshot<unknown> | undefined,
@@ -74,6 +81,32 @@ export function startAgent<TContext, TEvents extends { type: string }>(
             }
             : undefined,
     });
+
+    // Spec 010 §Behavior Contract: subscribe ONLY when `onError` is provided.
+    // When omitted, no subscribe call is made — XState's default propagation
+    // is preserved (the strict additive guarantee).
+    if (userOnError !== undefined) {
+        xstateActor.subscribe({
+            error: (rawError: unknown) => {
+                // Spec 010 §Snapshot-at-error semantics: read the actor's
+                // current snapshot synchronously inside the error subscriber.
+                // xstate@5.31.1 keeps `value` and `context` populated at this
+                // point (the failed leaf is still in `value`).
+                const live = xstateActor.getSnapshot() as unknown as {
+                    value: unknown;
+                    context: TContext;
+                };
+                userOnError({
+                    error: rawError,
+                    modePath: formatModePath(live.value),
+                    context: live.context,
+                    snapshot: buildAgentSnapshot<TContext>(
+                        xstateActor.getPersistedSnapshot(),
+                    ),
+                });
+            },
+        });
+    }
 
     xstateActor.start();
 

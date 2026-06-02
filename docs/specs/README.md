@@ -11,3 +11,4 @@
 | 007 | Release & Distribution  | Draft  |
 | 008 | Compound Mode Routes    | Done   |
 | 009 | Snapshot-Aware Rehydration and Atlas Actor Surface | Done   |
+| 010 | Host-Side Error Channel (`onError`) | Draft  |

@@ -7,9 +7,10 @@
 > the rationale for each shape lives in
 > [`docs/specs/004-xstate-agent-wrapper.md`](specs/004-xstate-agent-wrapper.md),
 > [`005`](specs/005-agent-deps-and-stringifiable-context.md),
-> [`006`](specs/006-modes-not-states.md), and
+> [`006`](specs/006-modes-not-states.md),
 > [`009`](specs/009-snapshot-aware-rehydration.md) (the `startAgent` actor
-> surface + multi-turn snapshot contract).
+> surface + multi-turn snapshot contract), and
+> [`010`](specs/010-error-channel.md) (the host-side `onError` channel).
 
 ## 1. Install
 
@@ -246,6 +247,71 @@ compound `local` slots on the active path. **What does not:** active `after`
 timers (XState limitation) and any pending events queued mid-turn (out of
 scope — hosts dispatch one event per turn).
 
+### Handling escapes (`onError`)
+
+When a leaf's `behavior` rejects and **no** `routes.error` entry catches it
+(absent route, no matched `when`, or matched `target: RE_THROW`), the
+rejection escapes the machine. Without an `onError` callback this becomes
+a process-level uncaught error and the readiness gate above never settles.
+`startAgent({ onError })` is the host-side hook:
+
+```ts
+import { startAgent, type AgentSnapshot, type AgentErrorInfo } from "@eduardorenani/atlasjs";
+
+async function runTurn(
+    text: string,
+    snapshot: AgentSnapshot<Ctx> | undefined,
+    requestCtx: { traceId: string; userId: string },
+): Promise<AgentSnapshot<Ctx>> {
+    let resolveReady: (() => void) | null = null;
+    let escaped: AgentErrorInfo<Ctx> | null = null;
+
+    const actor = startAgent<Ctx, Ev>(machine, {
+        snapshot,
+        inspect: (e) => {
+            if (e.to === "listening" && resolveReady) {
+                const r = resolveReady;
+                resolveReady = null;
+                r();
+            }
+        },
+        onError: (info) => {
+            logger.error({
+                err: info.error,
+                modePath: info.modePath,
+                traceId: requestCtx.traceId,
+                userId: requestCtx.userId,
+            }, "agent escape");
+            escaped = info;
+            if (resolveReady) {
+                const r = resolveReady;
+                resolveReady = null;
+                r();
+            }
+        },
+    });
+
+    const ready = new Promise<void>((r) => { resolveReady = r; });
+    actor.send({ type: "ASK", question: text });
+    await ready;
+
+    // Fire-and-log: persist the prior turn's snapshot so the next turn
+    // restarts at `listening`. To re-enter the failed leaf instead, use
+    // `escaped.snapshot`.
+    const next = escaped !== null ? (snapshot ?? actor.getSnapshot()) : actor.getSnapshot();
+    actor.stop();
+    return next;
+}
+```
+
+`onError` fires only when the rejection escapes — intra-machine recovery
+via `routes.error: { target: <sibling> }` consumes the rejection silently,
+and the host observes only the recovery transition through `inspect`.
+When `onError` is omitted, the wrapper makes no `subscribe` call and
+XState's default propagation applies (strictly additive, no migration
+required). Full contract in spec
+[`010`](specs/010-error-channel.md) §Behavior Contract.
+
 ## 7. Deps & JSON-safe context
 
 - **`deps`** — a frozen, JSON-incompatible (functions allowed!) container of
@@ -297,4 +363,5 @@ like `@eduardorenani/atlasjs@0.1.0-alpha.0` for reproducible installs. Spec
 - **`states` → `modes` vocabulary spec**: [`docs/specs/006-modes-not-states.md`](specs/006-modes-not-states.md)
 - **Release & distribution spec**: [`docs/specs/007-release-and-distribution.md`](specs/007-release-and-distribution.md)
 - **`startAgent` + snapshot rehydration spec**: [`docs/specs/009-snapshot-aware-rehydration.md`](specs/009-snapshot-aware-rehydration.md)
+- **Host-side error channel spec**: [`docs/specs/010-error-channel.md`](specs/010-error-channel.md)
 - **Design decisions log**: [`docs/design-decisions.md`](design-decisions.md)
