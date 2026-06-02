@@ -1,6 +1,7 @@
 // Runtime tests for `startAgent` and `formatModePath`.
 //
 // Spec: docs/specs/009-snapshot-aware-rehydration.md §Verification.
+//       docs/specs/010-error-channel.md §Verification (onError scenarios).
 //
 // Strategy: build minimal XState machines via `setup().createMachine()` and
 // drive them through `startAgent`. This isolates the wrapper's plumbing
@@ -11,11 +12,11 @@
 // from the captured snapshot.
 
 import { describe, expect, test } from "vitest";
-import { assign, setup } from "xstate";
+import { assign, fromPromise, setup } from "xstate";
 
 import { formatModePath } from "../src/formatModePath.ts";
 import { startAgent } from "../src/startAgent.ts";
-import type { AgentInspectionEvent } from "../src/types.ts";
+import type { AgentErrorInfo, AgentInspectionEvent } from "../src/types.ts";
 
 // ── Test machines ────────────────────────────────────────────────────
 
@@ -230,6 +231,214 @@ describe("startAgent() inspect adapter", () => {
     test("inspect is optional — actor works without it", () => {
         const actor = startAgent<CounterCtx, CounterEv>(counterMachine);
         expect(() => actor.send({ type: "INC" })).not.toThrow();
+        actor.stop();
+    });
+});
+
+// ── startAgent: onError channel (spec 010) ───────────────────────────
+
+// Test machines for spec 010. Each variant invokes a rejecting actor; the
+// difference is what (if anything) the failing state declares for
+// `invoke.onError`.
+
+type ErrEv = { type: "GO" };
+
+const BOOM = new Error("boom");
+
+const rejectingActor = fromPromise(async () => {
+    throw BOOM;
+});
+
+// Variant A — no `onError` route. Rejection escapes the machine.
+const escapeMachine = setup({
+    types: { context: {} as { last?: string }, events: {} as ErrEv },
+    actors: { rejecting: rejectingActor },
+}).createMachine({
+    id: "escape",
+    initial: "idle",
+    context: {},
+    states: {
+        idle: { on: { GO: "failing" } },
+        failing: {
+            invoke: { src: "rejecting" },
+        },
+    },
+});
+
+// Variant B — `routes.error.target: sibling` recovers the rejection.
+const recoverMachine = setup({
+    types: { context: {} as { last?: string }, events: {} as ErrEv },
+    actors: { rejecting: rejectingActor },
+}).createMachine({
+    id: "recover",
+    initial: "idle",
+    context: {},
+    states: {
+        idle: { on: { GO: "failing" } },
+        failing: {
+            invoke: {
+                src: "rejecting",
+                onError: {
+                    target: "recovered",
+                    actions: assign({ last: "handled" }),
+                },
+            },
+        },
+        recovered: {},
+    },
+});
+
+// Variant C — context written by an earlier transition is visible to
+// `onError` when a later leaf rejects. Models spec 010 §Verification #6.
+const preFailMachine = setup({
+    types: { context: {} as { runId?: string }, events: {} as ErrEv },
+    actors: { rejecting: rejectingActor },
+}).createMachine({
+    id: "prefail",
+    initial: "stamp",
+    context: {},
+    states: {
+        // `stamp` writes runId on entry, then auto-transitions to failing.
+        stamp: {
+            entry: assign({ runId: "r1" }),
+            always: "failing",
+        },
+        failing: {
+            invoke: { src: "rejecting" },
+        },
+    },
+});
+
+// `fromPromise` rejections settle on the microtask queue, so each test
+// awaits an explicit settle gate after the triggering `send`. The gate
+// resolves on either `onError` (escape) or an `inspect` transition the
+// test cares about (recovery), to avoid arbitrary timer delays.
+
+function flushMicrotasks(): Promise<void> {
+    return new Promise((r) => setTimeout(r, 0));
+}
+
+describe("startAgent() onError channel", () => {
+    test("escape: onError fires once with mode-path, error, and snapshot", async () => {
+        const calls: AgentErrorInfo<{ last?: string }>[] = [];
+        let resolveErr: (() => void) | null = null;
+        const errored = new Promise<void>((r) => { resolveErr = r; });
+        const actor = startAgent<{ last?: string }, ErrEv>(escapeMachine, {
+            onError: (info) => {
+                calls.push(info);
+                if (resolveErr) { resolveErr(); resolveErr = null; }
+            },
+        });
+        actor.send({ type: "GO" });
+        await errored;
+
+        expect(calls.length).toBe(1);
+        const info = calls[0];
+        expect(info).toBeDefined();
+        if (info === undefined) throw new Error("unreachable");
+        expect(info.error).toBe(BOOM);
+        expect(info.modePath).toBe("failing");
+        expect(info.snapshot.atlasVersion).toBe("1");
+    });
+
+    test("recover (intra-machine): onError does NOT fire", async () => {
+        const errs: unknown[] = [];
+        const transitions: string[] = [];
+        let resolveRecovered: (() => void) | null = null;
+        const recovered = new Promise<void>((r) => { resolveRecovered = r; });
+        const actor = startAgent<{ last?: string }, ErrEv>(recoverMachine, {
+            inspect: (e) => {
+                transitions.push(`${e.from} → ${e.to}`);
+                if (e.to === "recovered" && resolveRecovered) {
+                    resolveRecovered();
+                    resolveRecovered = null;
+                }
+            },
+            onError: (info) => errs.push(info),
+        });
+        actor.send({ type: "GO" });
+        await recovered;
+
+        expect(errs).toEqual([]);
+        expect(transitions).toEqual(
+            expect.arrayContaining([
+                "(init) → idle",
+                "idle → failing",
+                "failing → recovered",
+            ]),
+        );
+        actor.stop();
+    });
+
+    test("info.context reflects pre-failure root context", async () => {
+        const calls: AgentErrorInfo<{ runId?: string }>[] = [];
+        let resolveErr: (() => void) | null = null;
+        const errored = new Promise<void>((r) => { resolveErr = r; });
+        // preFailMachine auto-transitions from `stamp` (assigns runId="r1")
+        // into `failing` (rejects), so we don't even need to send an event:
+        // the failure path runs to completion on boot.
+        startAgent<{ runId?: string }, ErrEv>(preFailMachine, {
+            onError: (info) => {
+                calls.push(info);
+                if (resolveErr) { resolveErr(); resolveErr = null; }
+            },
+        });
+        await errored;
+
+        expect(calls.length).toBe(1);
+        const info = calls[0];
+        expect(info).toBeDefined();
+        if (info === undefined) throw new Error("unreachable");
+        // The earlier `entry: assign(runId="r1")` is observed by onError —
+        // proves the snapshot is captured synchronously inside subscribe.error
+        // and reflects the context the failing leaf actually saw.
+        expect(info.context.runId).toBe("r1");
+        expect(info.modePath).toBe("failing");
+    });
+
+    test("snapshot at error points at the failed leaf (pre-terminal)", async () => {
+        let captured: AgentErrorInfo<{ last?: string }> | undefined;
+        let resolveErr: (() => void) | null = null;
+        const errored = new Promise<void>((r) => { resolveErr = r; });
+        const first = startAgent<{ last?: string }, ErrEv>(escapeMachine, {
+            onError: (info) => {
+                captured = info;
+                if (resolveErr) { resolveErr(); resolveErr = null; }
+            },
+        });
+        first.send({ type: "GO" });
+        await errored;
+        expect(captured).toBeDefined();
+        if (captured === undefined) throw new Error("unreachable");
+
+        // The captured snapshot's persisted `value` still names the failed
+        // leaf — proving the snapshot was taken pre-terminal-cleanup. This
+        // is the contract that lets a host re-enter the failed leaf by
+        // feeding `info.snapshot` to a fresh `startAgent({ snapshot })`.
+        // We assert on the persisted shape directly because re-booting an
+        // actor in error status surfaces XState lifecycle quirks
+        // orthogonal to this contract.
+        const persisted = captured.snapshot.persisted as { value: unknown };
+        expect(formatModePath(persisted.value)).toBe("failing");
+    });
+
+    test("onError omitted: wrapper boots without observing the error channel", () => {
+        // Direct runtime check that constructing `startAgent` without
+        // `onError` produces a working actor whose surface is unchanged
+        // from spec 009. The "no subscribe call" contract itself is
+        // structurally enforced by `startAgent.ts`'s
+        // `if (userOnError !== undefined)` guard — a runtime assertion
+        // would have to spy on XState's actor internals (which the
+        // wrapper deliberately hides). The spec's Verification #4 cites
+        // the code site; we cover that the surface still works here.
+        const inspects: AgentInspectionEvent<{ last?: string }>[] = [];
+        const actor = startAgent<{ last?: string }, ErrEv>(escapeMachine, {
+            inspect: (e) => inspects.push(e),
+        });
+        // Boot path still emits the initial transition.
+        expect(inspects.map((e) => `${e.from} → ${e.to}`)).toEqual(
+            expect.arrayContaining(["(init) → idle"]),
+        );
         actor.stop();
     });
 });

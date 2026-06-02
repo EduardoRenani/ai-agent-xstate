@@ -780,6 +780,33 @@ export type AgentActor<TContext, TEvents extends { type: string }> = {
 };
 
 /**
+ * Payload delivered to `StartAgentOptions.onError` when a rejection escapes
+ * the machine — i.e. `behavior` rejected and either `routes.error` was
+ * absent, no `routes.error` entry's `when` matched, or a matched entry
+ * targeted `RE_THROW`. See spec 010 §Behavior Contract.
+ *
+ * - `error` — the raw rejection value. Typed as `unknown` because
+ *   `behavior` is a user-controlled `async` function whose rejection value
+ *   can be anything; narrowing is the host's job.
+ * - `modePath` — dot-joined path of the leaf whose `behavior` rejected,
+ *   formatted by the same `formatModePath` used by `inspect.transition`.
+ * - `context` — root context at the moment the rejection became fatal
+ *   (i.e. after any matched `routes.error.assign` ran).
+ * - `snapshot` — the agent snapshot at the moment of error, suitable for
+ *   persistence. Captured synchronously inside the error subscriber, before
+ *   the actor's terminal state is observable to `send`. Feeding it to a
+ *   fresh `startAgent({ snapshot })` re-enters the failed leaf — hosts
+ *   that want to "fire-and-log and keep listening" persist the *prior*
+ *   turn's snapshot instead (spec 010 §Recommended host pattern).
+ */
+export type AgentErrorInfo<TContext> = {
+    error: unknown;
+    modePath: string;
+    context: TContext;
+    snapshot: AgentSnapshot<TContext>;
+};
+
+/**
  * Options accepted by `startAgent`.
  *
  * - `snapshot` — persisted state from a previous turn. When omitted, the
@@ -788,8 +815,14 @@ export type AgentActor<TContext, TEvents extends { type: string }> = {
  *   §Persistence Contract).
  * - `inspect` — construction-time callback receiving Atlas-vocabulary
  *   events. Phase 1 emits only `transition`.
+ * - `onError` — construction-time callback fired when a rejection escapes
+ *   the machine's declarative recovery (`routes.error`). Strictly
+ *   additive: when omitted, the wrapper makes no `subscribe` call and
+ *   current Node `unhandledRejection` propagation is preserved
+ *   (spec 010 §Behavior Contract).
  */
 export type StartAgentOptions<TContext> = {
     snapshot?: AgentSnapshot<TContext>;
     inspect?: (event: AgentInspectionEvent<TContext>) => void;
+    onError?: (info: AgentErrorInfo<TContext>) => void;
 };

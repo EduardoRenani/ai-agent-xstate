@@ -35,8 +35,15 @@ async function main() {
         if (!text) continue;
 
         const previous = await loadSession(SESSION_ID);
-        const next = await runTurn(text, previous);
-        await saveSession(SESSION_ID, next);
+        const result = await runTurn(text, previous, SESSION_ID);
+        if (result.ok) {
+            await saveSession(SESSION_ID, result.snapshot);
+        } else {
+            // Fire-and-log fallback: the previous snapshot is untouched, so
+            // the next message restarts from the last-good `listening`. The
+            // escape was already logged by `runTurn`'s `onError` hook.
+            console.log("Agent error — please try again.\n");
+        }
     }
 }
 

@@ -119,6 +119,26 @@ async function runTurn(
 
 The canonical multi-turn host is one `runTurn` call per incoming message: load the previous snapshot from storage, run one turn, persist the new snapshot. `examples/zoe/` ships this end-to-end with a file-backed session store. Contract details in [`docs/specs/009-snapshot-aware-rehydration.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/009-snapshot-aware-rehydration.md).
 
+### Fire-and-log via `onError`
+
+When a `behavior` rejects and **no** `routes.error` entry catches it (absent route, no matched `when`, or matched `target: RE_THROW`), the rejection escapes the machine. `startAgent({ onError })` is the host-side hook — it fires precisely when XState would otherwise raise an uncaught error. Intra-machine recovery (`routes.error: { target: <sibling> }`) is unchanged and the host observes only the recovery transition through `inspect`.
+
+```ts
+import { startAgent, type AgentErrorInfo } from "@eduardorenani/atlasjs";
+
+startAgent<Ctx, Ev>(machine, {
+    onError: (info: AgentErrorInfo<Ctx>) => {
+        // info.error      — raw rejection (unknown)
+        // info.modePath   — dot-joined leaf path, e.g. "socratic.teaching"
+        // info.context    — root context after any routes.error.assign ran
+        // info.snapshot   — AgentSnapshot pointing at the failed leaf
+        logger.error({ err: info.error, modePath: info.modePath, traceId }, "agent escape");
+    },
+});
+```
+
+`onError` is opt-in: when omitted, the wrapper makes no `subscribe` call and Node's default unhandled-rejection propagation applies (strictly additive — no migration). Full contract in [`docs/specs/010-error-channel.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/010-error-channel.md).
+
 ## The three constructors
 
 | Constructor          | Purpose                                                                   |
@@ -139,7 +159,7 @@ The canonical multi-turn host is one `runTurn` call per incoming message: load t
 
 - **API reference** — the type signatures and JSDoc in [`packages/atlas/src/types.ts`](https://github.com/EduardoRenani/atlas/blob/main/packages/atlas/src/types.ts) are the source of truth.
 - **Worked example** — [`examples/zoe/`](https://github.com/EduardoRenani/atlas/tree/main/examples/zoe) is a CLI agent that classifies user intent and dispatches across greetings / improvising / socratic modes, and persists every turn via file-backed snapshots.
-- **Specs** — the API contract lives in [`docs/specs/004-xstate-agent-wrapper.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/004-xstate-agent-wrapper.md), [`005-agent-deps-and-stringifiable-context.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/005-agent-deps-and-stringifiable-context.md), [`006-modes-not-states.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/006-modes-not-states.md), and [`009-snapshot-aware-rehydration.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/009-snapshot-aware-rehydration.md) (the `startAgent` actor surface + multi-turn persistence contract).
+- **Specs** — the API contract lives in [`docs/specs/004-xstate-agent-wrapper.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/004-xstate-agent-wrapper.md), [`005-agent-deps-and-stringifiable-context.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/005-agent-deps-and-stringifiable-context.md), [`006-modes-not-states.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/006-modes-not-states.md), [`009-snapshot-aware-rehydration.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/009-snapshot-aware-rehydration.md) (the `startAgent` actor surface + multi-turn persistence contract), and [`010-error-channel.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/010-error-channel.md) (the host-side `onError` channel).
 - **Design decisions** — [`docs/design-decisions.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/design-decisions.md) records the "why" behind the four-outcome contract, goal-bound exits, and the modes-not-states vocabulary.
 
 ## License

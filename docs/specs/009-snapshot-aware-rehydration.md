@@ -362,7 +362,10 @@ Single PR. The wrapper changes are additive; the existing `defineAgent` /
 Settled:
 
 1. **Inspection event coverage in Phase 1.** Resolved: `transition` only.
-   `enter` / `exit` are deferred until a host actually needs them.
+   `enter` / `exit` / `error` are deferred until a host actually needs them.
+   The `error` kind landed in spec 010 as a separate `onError` callback on
+   `StartAgentOptions` rather than a variant on `AgentInspectionEvent` — see
+   DD-028 for the rationale.
 2. **Subscribe surface.** Resolved: construction-time `inspect` only. Symmetry
    with deps-freezing at boot.
 3. **Snapshot version field.** Resolved: coarse tag (e.g. `"1"`), bumped only
