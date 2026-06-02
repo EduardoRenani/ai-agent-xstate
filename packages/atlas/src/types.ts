@@ -586,9 +586,11 @@ export type ModesMap<
  *   **live-mirrored** into this compound. Keys NOT in `inherit` are invisible
  *   to children at the type level.
  * - **`local`** — own variables declared at this compound. Initialized on
- *   entry and **reset on re-entry** (DD-018). Constrained to
- *   `JsonCompatible<TLocal>` because the slot is persisted as part of the
- *   root context.
+ *   entry and **reset on re-entry** (DD-018), but **NOT** reset on snapshot
+ *   restore: when an actor is rehydrated via `startAgent({ snapshot })`,
+ *   the persisted slot wins over the entry-reset (spec 009 §Persistence
+ *   Contract). Constrained to `JsonCompatible<TLocal>` so the slot is
+ *   JSON-safe — required for snapshot serialization.
  *
  * Children see `Pick<TParent, inherit[number]> & typeof local` as their
  * context.
@@ -729,4 +731,65 @@ export type AgentConfig<
         (args: { context: TContext; event: TEvents; deps: TDeps }) => Partial<TContext>
     >>;
     modes: TModes;
+};
+
+// ── Atlas actor surface (spec 009) ───────────────────────────────────
+
+/**
+ * Atlas-vocabulary observation event. Phase 1 emits only `transition`.
+ *
+ * - `from` / `to` are mode-paths formatted by `formatModePath` (dot-joined,
+ *   parent first). Hosts no longer parse XState's nested `snapshot.value`
+ *   shape directly.
+ * - `context` is the root `TContext` AFTER the transition's assigns have
+ *   run.
+ */
+export type AgentInspectionEvent<TContext> = {
+    type: "transition";
+    from: string;
+    to: string;
+    context: TContext;
+};
+
+declare const agentSnapshotBrand: unique symbol;
+
+/**
+ * Opaque persisted agent state. Returned by `actor.getSnapshot()`; fed back
+ * to `startAgent({ snapshot })` next turn. The `TContext` parameter is brand-
+ * only (phantom) — used so a snapshot from agent A cannot be passed to
+ * `startAgent` for an agent whose `TContext` shape differs.
+ *
+ * Treat the value as opaque: persist `JSON.stringify(snapshot)` and restore
+ * with `JSON.parse` at the storage boundary.
+ */
+export type AgentSnapshot<TContext> = {
+    readonly atlasVersion: string;
+    readonly persisted: unknown;
+    readonly [agentSnapshotBrand]?: (_: TContext) => TContext;
+};
+
+/**
+ * Started Atlas actor. Auto-started by `startAgent`; call `stop()` to
+ * dispose. Use `inspect` at construction time for observation; build any
+ * readiness gates the host needs from that callback.
+ */
+export type AgentActor<TContext, TEvents extends { type: string }> = {
+    send: (event: TEvents) => void;
+    stop: () => void;
+    getSnapshot: () => AgentSnapshot<TContext>;
+};
+
+/**
+ * Options accepted by `startAgent`.
+ *
+ * - `snapshot` — persisted state from a previous turn. When omitted, the
+ *   machine boots into its `initial` state. When present, the persisted
+ *   slot for every compound `local` survives `entry`-reset (spec 009
+ *   §Persistence Contract).
+ * - `inspect` — construction-time callback receiving Atlas-vocabulary
+ *   events. Phase 1 emits only `transition`.
+ */
+export type StartAgentOptions<TContext> = {
+    snapshot?: AgentSnapshot<TContext>;
+    inspect?: (event: AgentInspectionEvent<TContext>) => void;
 };

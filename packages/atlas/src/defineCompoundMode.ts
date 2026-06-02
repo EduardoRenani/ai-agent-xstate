@@ -55,7 +55,10 @@ export type CompoundModeCarrier<
  *
  * Children's effective context is `LocalContextOf<TParentContext, TCtx>`:
  * - With `context` supplied: `Pick<TParentContext, inherit[number]> & typeof local`.
- *   Inherited keys are live-mirrored; locals are reset on every entry.
+ *   Inherited keys are live-mirrored; locals are reset on every re-entry, but
+ *   **NOT** on snapshot restore — when an actor is rehydrated via
+ *   `startAgent({ snapshot })`, the persisted slot wins over the entry-reset
+ *   (spec 009 §Persistence Contract).
  * - Without `context`: children see the full `TParentContext`.
  *
  * Children route out of the compound via `END` (defined in `./types.ts`); the
