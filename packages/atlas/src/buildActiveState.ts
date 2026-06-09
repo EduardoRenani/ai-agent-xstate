@@ -35,7 +35,12 @@
 import { assign } from "xstate";
 
 import { actorName } from "./actorName.ts";
-import { liftExitAssign, liftInput, type LiftContext } from "./contextLift.ts";
+import {
+    liftErrorAssignFromOutput,
+    liftExitAssign,
+    liftInput,
+    type LiftContext,
+} from "./contextLift.ts";
 import {
     END_ABANDONED,
     END_ACHIEVED,
@@ -401,8 +406,16 @@ function wrapFooExitAssign(
 
 function wrapFooErrorAssign(
     userAssign: UserErrorAssign,
+    lift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
 ): ReturnType<typeof assign> {
+    // SPEC 011: under a compound-local lift, the error `assign` must see the
+    // lifted view and split its writes — symmetric with the exit path
+    // (`wrapFooExitAssign`). The raw error arrives at `foo.onDone[error]` as
+    // `event.output.payload` (forwarded by the `$end_error` final).
+    if (lift !== undefined) {
+        return liftErrorAssignFromOutput(userAssign, lift, deps);
+    }
     return assign(({ context, event }) => {
         const error = (event as unknown as { output: { payload: unknown } }).output.payload;
         return userAssign({ context, error, deps });
@@ -432,6 +445,7 @@ function buildFooExitTransition(
 
 function buildFooErrorTransition(
     entry: ErrorEntry<InternalCtx>,
+    lift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
 ): LoweredOnDoneTransition {
     const guard = makeFooOutcomeGuard("error", entry.when);
@@ -450,7 +464,7 @@ function buildFooErrorTransition(
         target: entry.target === END ? END_ERROR : entry.target,
     };
     if (entry.assign !== undefined) {
-        transition.actions = wrapFooErrorAssign(entry.assign as UserErrorAssign, deps);
+        transition.actions = wrapFooErrorAssign(entry.assign as UserErrorAssign, lift, deps);
     }
     return transition;
 }
@@ -469,7 +483,7 @@ function buildModeOnDone(
     }
     if (routes.error !== undefined) {
         for (const entry of normalizeErrorEntries(routes.error)) {
-            out.push(buildFooErrorTransition(entry, deps));
+            out.push(buildFooErrorTransition(entry, lift, deps));
         }
     }
     return out;

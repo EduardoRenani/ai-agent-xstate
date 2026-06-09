@@ -112,8 +112,19 @@ function makeNonErrorOutput(
 // bucket (errors are not user-shaped payloads).
 function makeErrorOutput(): FinalOutputFn {
     return ({ event }) => {
-        const e = event as { error?: unknown };
-        return { outcome: "error", payload: e.error };
+        // The error final is entered from two event shapes:
+        //   - directly from a leaf's `$run.invoke.onError` → `event.error` (the
+        //     raw rejection), OR
+        //   - SPEC 011: bubbled up from a child (mini-)compound's own error
+        //     final, where the child already forwarded the raw error as
+        //     `event.output.payload`. Since every leaf is now a mini-compound,
+        //     a leaf's error reaches its ENCLOSING compound via this second
+        //     shape — reading only `event.error` here would drop it (the
+        //     enclosing `routes.error.when`/`assign` must still see the raw
+        //     error, spec 008 §Verification 5).
+        const e = event as { error?: unknown; output?: { payload?: unknown } };
+        const error = "error" in e ? e.error : e.output?.payload;
+        return { outcome: "error", payload: error };
     };
 }
 

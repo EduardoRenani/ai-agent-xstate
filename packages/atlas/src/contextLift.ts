@@ -173,6 +173,8 @@ export function liftExitAssign(
 }
 
 // Wrap a user `assign({ context, error, deps })` callback (error routes).
+// Reads the raw error from `event.error` — the shape XState delivers on a
+// single-hop `invoke.onError`.
 export function liftErrorAssign(
     userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext,
@@ -182,6 +184,28 @@ export function liftErrorAssign(
         const root = context as Record<string, unknown>;
         const sub = buildSubContext(root, lift);
         const error = (event as unknown as { error: unknown }).error;
+        const update = userAssign({ context: sub, error, deps }) as Record<string, unknown>;
+        return splitUserUpdate(update, root, lift);
+    });
+}
+
+// SPEC 011: a mode's error route now runs its `assign` on `foo.onDone[error]`,
+// where the raw error has been FORWARDED through the `$end_error` final as
+// `event.output.payload` (not `event.error`, which is only live on the
+// single-hop `invoke.onError`). Same lifted read-view + write-split as
+// `liftErrorAssign`, differing only in where the error is sourced from. Without
+// this the error `assign` would not split into the compound-local slot — the
+// exit (`achieved`/`abandoned`) path already lifts via `liftExitAssign`, and the
+// error path must do the same.
+export function liftErrorAssignFromOutput(
+    userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
+    lift: LiftContext,
+    deps: Readonly<Record<string, unknown>>,
+): ReturnType<typeof assign> {
+    return assign(({ context, event }) => {
+        const root = context as Record<string, unknown>;
+        const sub = buildSubContext(root, lift);
+        const error = (event as unknown as { output: { payload: unknown } }).output.payload;
         const update = userAssign({ context: sub, error, deps }) as Record<string, unknown>;
         return splitUserUpdate(update, root, lift);
     });
