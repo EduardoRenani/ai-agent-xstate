@@ -28,7 +28,7 @@ import {
 } from "../src/contextLift.ts";
 import { buildActiveState } from "../src/buildActiveState.ts";
 import type { LeafSlot } from "../src/walk.ts";
-import type { ActiveModeConfig, ModeOutput } from "../src/types.ts";
+import type { RunModeConfig, ModeResult } from "../src/types.ts";
 
 describe("compoundLocalKey()", () => {
     test("single segment → `__<name>_local`", () => {
@@ -315,7 +315,7 @@ describe("integration with buildActiveState(slot, lift)", () => {
         type LiftedContext = { messages: string[]; attempts: number };
         type ReceivedInput = { messages: string[]; attempts: number };
 
-        const config: ActiveModeConfig<LiftedContext, { type: string }, { reply: string }> = {
+        const config: RunModeConfig<LiftedContext, { type: string }, { reply: string }> = {
             input: ({ context }) => ({
                 messages: context.messages,
                 attempts: context.attempts,
@@ -335,7 +335,6 @@ describe("integration with buildActiveState(slot, lift)", () => {
                         attempts: context.attempts + 1,
                     }),
                 },
-                retry: [],
                 abandoned: { target: "done" },
             },
         };
@@ -356,11 +355,15 @@ describe("integration with buildActiveState(slot, lift)", () => {
         const machine = setup({
             types: {} as { context: RootCtx },
             actors: {
-                [lowered.invoke.src]: fromPromise(async ({ input }) => {
+                [lowered.states.$run.invoke.src]: fromPromise(async ({ input }) => {
                     // Bridge: this actor runs the user's `behavior` via the
-                    // wrapped input. `lowered.invoke.input(...)` is what
-                    // XState would call to build this actor's input.
-                    return config.behavior({ input });
+                    // wrapped input. SPEC 011: the invoke now lives at
+                    // `lowered.states.$run.invoke`, and its `input` builds an
+                    // envelope `{ userInput, event }` (the real actor in
+                    // buildActors unpacks it). Mirror that unpacking here so
+                    // `behavior` receives the user input it expects.
+                    const env = input as { userInput: unknown; event: unknown };
+                    return config.behavior({ input: env.userInput, event: env.event });
                 }),
             },
         }).createMachine({
@@ -368,12 +371,15 @@ describe("integration with buildActiveState(slot, lift)", () => {
             initial: "thinking",
             context: { messages: ["seed"], __socratic_local: { attempts: 2 } },
             states: {
+                // SPEC 011: `lowered` is now the mode's mini-compound
+                // (`$run`/`$wait`/`$end_*` + `onDone`), mounted as a single
+                // compound state. The exit assign runs on its `onDone` exactly
+                // as it did on the old leaf transition.
                 thinking: lowered as unknown as {
-                    invoke: {
-                        src: string;
-                        input: (args: { context: RootCtx }) => unknown;
-                        onDone: readonly { target?: string; actions?: unknown }[];
-                    };
+                    initial: string;
+                    entry?: unknown;
+                    states: Record<string, unknown>;
+                    onDone: readonly { target?: string; actions?: unknown }[];
                 },
                 done: { type: "final" },
             },
@@ -411,14 +417,13 @@ describe("integration: error route under a lift", () => {
         };
         type LiftedContext = { log: string[]; lastError: string };
 
-        const config: ActiveModeConfig<LiftedContext, { type: string }, { ok: boolean }> = {
+        const config: RunModeConfig<LiftedContext, { type: string }, { ok: boolean }> = {
             input: ({ context }) => ({ log: context.log }),
             behavior: async () => {
                 throw new Error("kaboom");
             },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
                 error: {
                     target: "done",
@@ -440,7 +445,7 @@ describe("integration: error route under a lift", () => {
         const machine = setup({
             types: {} as { context: RootCtx },
             actors: {
-                [lowered.invoke.src]: fromPromise(async () => {
+                [lowered.states.$run.invoke.src]: fromPromise(async () => {
                     throw new Error("kaboom");
                 }) as unknown as ReturnType<typeof fromPromise>,
             },
@@ -449,13 +454,14 @@ describe("integration: error route under a lift", () => {
             initial: "foo",
             context: { log: [], __foo_local: { lastError: "" } },
             states: {
+                // SPEC 011: mode mini-compound; the error route lowers to
+                // `$run.invoke.onError → $end_error → onDone[error]`, whose
+                // lifted error assign runs the same write-split as before.
                 foo: lowered as unknown as {
-                    invoke: {
-                        src: string;
-                        input: (args: { context: RootCtx }) => unknown;
-                        onDone: readonly unknown[];
-                        onError?: readonly unknown[];
-                    };
+                    initial: string;
+                    entry?: unknown;
+                    states: Record<string, unknown>;
+                    onDone: readonly unknown[];
                 },
                 done: { type: "final" },
             },
@@ -484,7 +490,7 @@ describe("integration: error route under a lift", () => {
 describe("buildActiveState without lift (backward compatibility)", () => {
     test("input and assign see the full root context verbatim", async () => {
         type Ctx = { count: number; tag: string };
-        const config: ActiveModeConfig<Ctx, { type: string }, { result: string }> = {
+        const config: RunModeConfig<Ctx, { type: string }, { result: string }> = {
             input: ({ context }) => ({ count: context.count, tag: context.tag }),
             behavior: async ({ input }) => {
                 const i = input as { count: number; tag: string };
@@ -498,7 +504,6 @@ describe("buildActiveState without lift (backward compatibility)", () => {
                         tag: `${context.tag}/${payload.result}`,
                     }),
                 },
-                retry: [],
                 abandoned: { target: "done" },
             },
         };
@@ -512,19 +517,24 @@ describe("buildActiveState without lift (backward compatibility)", () => {
         const machine = setup({
             types: {} as { context: Ctx },
             actors: {
-                [lowered.invoke.src]: fromPromise(async ({ input }) => config.behavior({ input })),
+                [lowered.states.$run.invoke.src]: fromPromise(async ({ input }) => {
+                    // SPEC 011 envelope unpack (see the lifted integration test above).
+                    const env = input as { userInput: unknown; event: unknown };
+                    return config.behavior({ input: env.userInput, event: env.event });
+                }),
             },
         }).createMachine({
             id: "no-lift",
             initial: "plain",
             context: { count: 4, tag: "t" },
             states: {
+                // SPEC 011: mode mini-compound, no lift — input/assign see the
+                // full root context verbatim (the no-lift backward-compat path).
                 plain: lowered as unknown as {
-                    invoke: {
-                        src: string;
-                        input: (args: { context: Ctx }) => unknown;
-                        onDone: readonly unknown[];
-                    };
+                    initial: string;
+                    entry?: unknown;
+                    states: Record<string, unknown>;
+                    onDone: readonly unknown[];
                 },
                 done: { type: "final" },
             },
@@ -545,7 +555,7 @@ describe("buildActiveState without lift (backward compatibility)", () => {
     });
 });
 
-// Ensure `ModeOutput` import in the file isn't dropped by the linter — it
-// is referenced by `ActiveModeConfig` generics at the call sites above.
-const _modeOutputAnchor: ModeOutput<unknown> = { outcome: "achieved", payload: undefined };
-void _modeOutputAnchor;
+// Ensure the `ModeResult` import in the file isn't dropped by the linter — it
+// is referenced by `RunModeConfig` generics at the call sites above.
+const _modeResultAnchor: ModeResult<unknown> = { outcome: "achieved", payload: undefined };
+void _modeResultAnchor;

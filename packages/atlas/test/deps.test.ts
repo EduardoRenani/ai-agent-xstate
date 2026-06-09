@@ -6,10 +6,24 @@ import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
-import type { ModeOutput } from "../src/types.ts";
+import type { ModeResult } from "../src/types.ts";
 
 type Ctx = { messages: readonly string[]; lastSeenBy: string };
 type Events = { type: "MESSAGE"; text: string };
+
+// SPEC 011: there is no more `{ on: {} }` passive leaf. A terminal sink — a mode
+// the agent enters and never leaves — is an event-mode that awaits no events, so
+// it parks in `$wait` forever; its behavior/routes are unreachable scaffolding.
+// (Behaviorally identical to the old `{ on: {} }` sink for these tests, which
+// only route INTO it after `probe` resolves and never leave.)
+const terminalSink = () =>
+    defineMode<Ctx, Events>({
+        start: "event",
+        events: [],
+        input: () => null,
+        behavior: async () => ({ outcome: "achieved", payload: undefined }),
+        routes: { achieved: { target: "done" }, abandoned: { target: "done" } },
+    });
 
 describe("deps — construction-time freeze and identity", () => {
     test("`Object.freeze` is applied to the top level of the deps container", async () => {
@@ -20,15 +34,14 @@ describe("deps — construction-time freeze and identity", () => {
             input: ({ deps }) => deps,
             behavior: async ({ deps }) => {
                 observedDeps = deps;
-                return { outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>;
+                return { outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>;
             },
             routes: {
                 achieved: { target: "done" },
-                retry: {},
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = terminalSink();
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, Deps>({
             id: "freeze",
@@ -62,15 +75,14 @@ describe("deps — construction-time freeze and identity", () => {
             behavior: async ({ deps }) => {
                 deps.state.calls += 1;
                 observed = deps;
-                return { outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>;
+                return { outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>;
             },
             routes: {
                 achieved: { target: "done" },
-                retry: {},
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = terminalSink();
 
         const initialState = { calls: 0 };
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, NestedDep>({
@@ -104,7 +116,7 @@ describe("deps — construction-time freeze and identity", () => {
             },
             behavior: async ({ deps }) => {
                 seenIn.behavior = deps;
-                return { outcome: "achieved", payload: { value: 1 } } satisfies ModeOutput<{ value: number }>;
+                return { outcome: "achieved", payload: { value: 1 } } satisfies ModeResult<{ value: number }>;
             },
             routes: {
                 achieved: {
@@ -114,11 +126,10 @@ describe("deps — construction-time freeze and identity", () => {
                         return { lastSeenBy: `${context.lastSeenBy}|${payload.value}` };
                     },
                 },
-                retry: {},
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = terminalSink();
 
         const depsValue: Deps = { id: "the-one" };
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, Deps>({
@@ -148,11 +159,10 @@ describe("deps — construction-time freeze and identity", () => {
                 input: ({ deps }) => deps,
                 behavior: async ({ deps }) => {
                     tagDest.id = deps.id;
-                    return { outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>;
+                    return { outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>;
                 },
                 routes: {
                     achieved: { target: "done" },
-                    retry: {},
                     abandoned: { target: "done" },
                 },
             });
@@ -161,7 +171,7 @@ describe("deps — construction-time freeze and identity", () => {
         const bSeen: { id?: string } = {};
         const aProbe = probeFor(aSeen);
         const bProbe = probeFor(bSeen);
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = terminalSink();
 
         const machineA = defineAgent<Ctx, Events, { probe: typeof aProbe; done: typeof done }, Deps>({
             id: "a",
@@ -198,15 +208,14 @@ describe("deps — defaulting to `{}` when omitted", () => {
             input: ({ deps }) => deps,
             behavior: async ({ deps }) => {
                 observed = deps;
-                return { outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>;
+                return { outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>;
             },
             routes: {
                 achieved: { target: "done" },
-                retry: {},
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = terminalSink();
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }>({
             id: "no-deps",
