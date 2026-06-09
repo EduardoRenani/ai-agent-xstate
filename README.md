@@ -87,7 +87,7 @@ flowchart LR
 ```mermaid
 %% Spec: c4-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-28
+%% Atualizado: 2026-06-09
 %% Fonte: examples/zoe/src/index.ts, examples/zoe/src/machine.ts, examples/zoe/src/llm-client.ts, examples/zoe/src/states/*.ts
 sequenceDiagram
     participant user as [ENTRY] User
@@ -96,50 +96,54 @@ sequenceDiagram
     participant client as [CODE] LLM Client
     participant api as [EXT] OpenRouter API
 
+    Note over machine: listening parks (start:"event") waiting for MESSAGE
     user->>cli: types first message
     cli->>machine: send MESSAGE event
-    Note over machine: listening → classifying (appendUserMessage)
-    machine->>machine: invoke classifyingMode
+    Note over machine: listening behavior appends user message → achieved → classifying
+    machine->>machine: invoke classifyingMode (dry run, no event)
     Note over machine: first-message short-circuit: intent=greetings (no LLM call)
     Note over machine: classifying → greetings
     machine->>client: invoke greetingsMode(messages, GREETINGS_PROMPT)
     client->>api: chat.completions.create
     api-->>client: completion response
-    client-->>machine: ModeOutput of messages (outcome=achieved)
+    client-->>machine: ModeResult outcome=achieved (messages)
     Note over machine: greetings → classifying (assign, print)
     machine->>client: invoke classifyingMode(messages, CLASSIFIER_PROMPT)
     client->>api: chat.completions.create
-    api-->>client: ModeOutput of intent=none
-    Note over machine: classifying → listening (root)
+    api-->>client: ModeResult outcome=achieved (intent=none)
+    Note over machine: classifying → listening (root, parks again)
 
     loop conversation continues (exit: process termination)
         user->>cli: types message
         cli->>machine: send MESSAGE event
-        Note over machine: listening → classifying (appendUserMessage)
+        Note over machine: listening behavior appends message → achieved → classifying
         machine->>client: invoke classifyingMode
         client->>api: chat.completions.create
-        api-->>client: ModeOutput of intent
+        api-->>client: ModeResult outcome=achieved (intent)
 
         alt intent = socratic
-            Note over machine: classifying → socratic.teaching
-            machine->>client: invoke socraticTeachingMode
+            Note over machine: classifying → socratic (single self-suspending mode)
+            Note over machine: dry-run entry → TEACH phase
+            machine->>client: invoke socratic behavior (TEACH_PROMPT)
             client->>api: chat.completions.create
-            api-->>client: ModeOutput of messages (achieved)
-            Note over machine: socratic.teaching → socratic.listening (assign, print)
-            user->>cli: types answer to counter-proof
+            api-->>client: ModeResult stay=waitOnEvent (taught, parks for reply)
+            Note over machine: socratic parks waiting for MESSAGE (assign, print)
+            user->>cli: types answer to check-question
             cli->>machine: send MESSAGE event
-            Note over machine: socratic.listening → socratic.evaluating (appendUserMessage)
-            machine->>client: invoke socraticEvaluatingMode
-            client->>api: chat.completions.create
-            api-->>client: ModeOutput undefined (outcome=achieved | retry | abandoned)
-            Note over machine: retry returns to socratic.teaching (no assign, no print). The cycle repeats until achieved or abandoned.
-            Note over machine: socratic.evaluating → socratic.done → classifying
+            Note over machine: same socratic mode resumes → EVALUATE phase
+            loop re-teach until understood (exit: achieved | abandoned | evalRetries ≥ 3)
+                machine->>client: invoke socratic behavior (EVALUATE_PROMPT)
+                client->>api: chat.completions.create
+                api-->>client: ModeResult (achieved | abandoned | stay=replay)
+                Note over machine: stay=replay → re-run TEACH now (no event, bumps evalRetries)
+            end
+            Note over machine: outcome=achieved|abandoned → socratic → classifying (reset evalRetries)
 
         else intent = improvise
             Note over machine: classifying → improvising
-            machine->>client: invoke improvisingMode (with tools)
+            machine->>client: invoke improvising behavior (with tools)
             client->>api: chat.completions.create (may iterate on tool_calls)
-            api-->>client: ModeOutput of messages (achieved)
+            api-->>client: ModeResult outcome=achieved (messages)
             Note over machine: improvising → classifying (assign, print)
 
         else intent = none

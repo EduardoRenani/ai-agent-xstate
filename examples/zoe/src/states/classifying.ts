@@ -1,5 +1,5 @@
 import { defineMode } from "@eduardorenani/atlasjs";
-import type { ModeOutput } from "@eduardorenani/atlasjs";
+import type { ModeResult } from "@eduardorenani/atlasjs";
 
 import { chat } from "../llm-client.js";
 import type { Message } from "../llm-client.js";
@@ -39,7 +39,9 @@ function formatForClassification(messages: Message[]): Message[] {
 
 export const classifying = defineMode<AgentContext, AgentEvents, ClassifierPayload>({
     input: ({ context }) => ({ messages: context.messages }),
-    behavior: async ({ input }): Promise<ModeOutput<ClassifierPayload>> => {
+    // SPEC 011: active mode entered by a transition — it ignores `event`
+    // (`AgentEvents | undefined`); it runs its dry-run on entry.
+    behavior: async ({ input }): Promise<ModeResult<ClassifierPayload>> => {
         const { messages } = input as { messages: Message[] };
 
         // First-message fast-path: a single user message and no assistant
@@ -77,9 +79,9 @@ export const classifying = defineMode<AgentContext, AgentEvents, ClassifierPaylo
             { when: (p) => p.intent === "none",      target: "listening" },
             { target: "improvising" },
         ],
-        // The classifier never returns retry / abandoned in practice; the
-        // type system requires both keys. Safe fallbacks:
-        retry:     [],                       // no-op default
-        abandoned: { target: "listening" },  // back to idle on unexpected failure
+        // SPEC 011: `routes` holds only exits (achieved/abandoned) — no `retry`
+        // bucket. The classifier never abandons in practice; the type system
+        // requires the key. Safe fallback: back to idle on unexpected failure.
+        abandoned: { target: "listening" },
     },
 });

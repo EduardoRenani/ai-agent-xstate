@@ -3,52 +3,57 @@ title: State Machine — Zoe Agent
 ---
 %% Spec: behavioral-doc.md
 %% Modo: incremental
-%% Atualizado: 2026-05-28
+%% Atualizado: 2026-06-09
 %% Fonte: examples/zoe/src/machine.ts, examples/zoe/src/states/*.ts (built with packages/atlas/)
 %% Componente C4: machine (c2-container.mmd)
 %% Container C4: system (c2-container.mmd)
-%% Externos que disparam transicoes: OpenRouter API (via invoke nos modos *Mode)
+%% Externos que disparam transicoes: OpenRouter API (via chat() inside each mode behavior)
 stateDiagram-v2
     [*] --> listening
 
-    listening --> classifying: MESSAGE / appendUserMessage
+    listening --> classifying: MESSAGE [outcome=achieved] / append user msg, assign messages
 
-    classifying --> greetings: onDone [intent=greetings]
-    classifying --> socratic: onDone [intent=socratic]
-    classifying --> listening: onDone [intent=none]
-    classifying --> improvising: onDone [default]
+    classifying --> greetings: [outcome=achieved] [intent=greetings]
+    classifying --> socratic: [outcome=achieved] [intent=socratic]
+    classifying --> listening: [outcome=achieved] [intent=none]
+    classifying --> improvising: [outcome=achieved] [default]
+    classifying --> listening: [outcome=abandoned]
 
-    greetings --> classifying: onDone [achieved] / assign messages, print
+    greetings --> classifying: [outcome=achieved] / assign messages, print
+    greetings --> classifying: [outcome=abandoned]
 
-    state socratic {
-        [*] --> sTeaching
-        sTeaching --> sListening: onDone / assign messages, print
-        sListening --> sEvaluating: MESSAGE / appendUserMessage
-        sEvaluating --> sDone: onDone [outcome=achieved]
-        sEvaluating --> sDone: onDone [outcome=abandoned]
-        sEvaluating --> sTeaching: onDone [retry]
-        sDone --> [*]
-    }
-    socratic --> classifying: parent.onDone
+    socratic --> socratic: stay:waitOnEvent / teach, assign messages
+    socratic --> socratic: MESSAGE stay:replay / re-teach, evalRetries++
+    socratic --> classifying: MESSAGE [outcome=achieved] / assign messages, evalRetries=0
+    socratic --> classifying: [outcome=abandoned] / assign messages, evalRetries=0
 
-    improvising --> classifying: onDone [achieved] / assign messages, print
+    improvising --> classifying: [outcome=achieved] / assign messages, print
+    improvising --> classifying: [outcome=abandoned]
     improvising --> classifying: onError / assign messages, log error
 
+    note right of listening
+        start: "event" — parks on entry, runs only on MESSAGE.
+        Behavior appends event.text to messages and returns
+        { outcome: "achieved" }. (The old appendUserMessage
+        named action is gone — the work is inside the behavior.)
+    end note
+
     note right of classifying
-        Invokes classifyingMode.
-        First-message short-circuit: one user msg + no assistant -> intent=greetings (no LLM call).
-        Otherwise LLM returns one of greetings | socratic | improvise | none.
+        start: "run" — dry-run on entry (event ignored).
+        First-message short-circuit: one user msg + no assistant
+        -> intent=greetings (no LLM call). Otherwise LLM returns
+        socratic | improvise | none (unknown -> improvise default).
         Does NOT modify messages.
     end note
 
-    note right of sEvaluating
-        Invokes socraticEvaluatingMode (purely analytical).
-        Returns ModeOutput<undefined> with outcome in {achieved, retry, abandoned}.
-        Does NOT modify messages, does NOT print.
-        Re-teaching on retry is the responsibility of sTeaching.
-    end note
-
-    note right of sTeaching
-        Invokes socraticTeachingMode.
-        On retry: detects prior failed attempt in history and re-explains from a different angle.
+    note right of socratic
+        start: "run" — single self-suspending leaf (ModeResult).
+        Circuit breaker (top of behavior): evalRetries >= RETRY_LIMIT
+        -> { outcome: "abandoned" } -> classifying.
+        No event (dry-run entry OR replay): TEACH, then
+        stay:"waitOnEvent" (park for next MESSAGE).
+        On MESSAGE: EVALUATE -> achieved | abandoned (both exit to
+        classifying) OR stay:"replay" (re-teach from a new angle,
+        bumps evalRetries). Loop exit: outcome achieved/abandoned
+        or evalRetries >= RETRY_LIMIT.
     end note

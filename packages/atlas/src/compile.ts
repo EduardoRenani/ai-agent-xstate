@@ -29,7 +29,7 @@
 //   - validateTargets, validateRoutes   (fail-fast at machine creation)
 //   - walk + actorName + buildActors    (active-leaf actor map)
 //   - buildActions                      (named-actions map)
-//   - buildActiveState / buildPassiveState (per-leaf lowering, lift-aware)
+//   - buildActiveState                  (per-leaf mini-compound lowering, lift-aware)
 //   - contextLift                       (LiftContext + entry/exit assigns)
 //   - injectEnd                         (per-outcome `$end_*` + bucket → name)
 //
@@ -40,11 +40,10 @@ import { assign, setup, type AnyActorLogic, type AnyStateMachine, type assign as
 import { buildActions } from "./buildActions.ts";
 import {
     buildActiveState,
-    type LoweredInvokeState,
+    type LoweredModeCompound,
     type LoweredOnDoneTransition,
 } from "./buildActiveState.ts";
 import { buildActors } from "./buildActors.ts";
-import { buildPassiveState, type LoweredAtomicState } from "./buildPassiveState.ts";
 import {
     buildSubContext,
     compoundLocalKey,
@@ -79,8 +78,6 @@ import type {
     JsonObject,
     ModesMap,
     ModeConfig,
-    Outcome,
-    PassiveModeConfig,
     RouteList,
 } from "./types.ts";
 import { validateRoutes } from "./validateRoutes.ts";
@@ -101,7 +98,15 @@ type LoweredCompoundState = {
     exit?: ReturnType<typeof XAssign>;
 };
 
-type LoweredState = LoweredLeafState | LoweredCompoundState | LoweredFinalState;
+// SPEC 011 §Desugaring (DD-029): a leaf mode lowers to a mini-compound
+// (`LoweredModeCompound`). It is structurally a compound to this level's
+// walk — `isCompound` matches it, and its `onDone` carries the route-target
+// bucket sentinels the parent level resolves, exactly like a real compound.
+type LoweredState =
+    | LoweredLeafState
+    | LoweredCompoundState
+    | LoweredModeCompound
+    | LoweredFinalState;
 
 // ── Carrier shapes (runtime discriminator) ───────────────────────────
 //
@@ -156,7 +161,12 @@ function asCarrier(value: unknown): LeafCarrier | CompoundCarrier {
 
 // ── Lowered-state classifiers ────────────────────────────────────────
 
-function isCompound(node: LoweredState): node is LoweredCompoundState {
+// Both a real compound (`LoweredCompoundState`) and a leaf-mode mini-compound
+// (`LoweredModeCompound`) expose their parent-facing bucket sentinels via an
+// optional `onDone`. The level-walk only ever reads/rewrites that field.
+type AnyCompound = LoweredCompoundState | LoweredModeCompound;
+
+function isCompound(node: LoweredState): node is AnyCompound {
     return "initial" in node && "states" in node;
 }
 
@@ -188,10 +198,10 @@ function collectBucketsForNode(node: LoweredState): ReadonlySet<EndBucketSymbol>
     return out;
 }
 
-function rewriteCompoundOnDone(
-    node: LoweredCompoundState,
+function rewriteCompoundOnDone<T extends AnyCompound>(
+    node: T,
     nameByBucket: ReadonlyMap<EndBucketSymbol, string>,
-): LoweredCompoundState {
+): T {
     if (node.onDone === undefined) return node;
     const onDone = node.onDone.map((t): LoweredOnDoneTransition => {
         if (!isBucketSymbol(t.target)) return t;
@@ -211,16 +221,48 @@ function rewriteNodeBuckets(
     return rewriteCompoundOnDone(node, nameByBucket);
 }
 
-// Apply `rewriteErrorBucketToReThrow` to every leaf whose `invoke.onError`
-// references `END_ERROR`. Only used when the enclosing compound omits
-// `routes.error` — converts the bucket sentinel into a target-less throw.
+// When the enclosing compound omits `routes.error`, a child's error path that
+// bubbles `END` must re-throw above this compound (spec 008 line 87). A child
+// can carry the `END_ERROR` sentinel in two shapes at this level:
+//   - a plain leaf (`invoke.onError`) — `rewriteErrorBucketToReThrow`.
+//   - a (mode- or real) compound whose `onDone[i].target === END_ERROR` — that
+//     entry dispatches against the `$end_error` final's emitted
+//     `{ outcome:"error", payload: <error> }`, so the throw reads
+//     `event.output.payload` (SPEC 011 §Desugaring — a leaf mode is a
+//     mini-compound, so its `error` END now surfaces on `onDone`, not
+//     `invoke.onError`).
+function rewriteCompoundErrorBucketToReThrow<T extends AnyCompound>(node: T): T {
+    if (node.onDone === undefined) return node;
+    const onDone = node.onDone.map((t): LoweredOnDoneTransition => {
+        if (t.target !== END_ERROR) return t;
+        const rewritten: LoweredOnDoneTransition = {
+            actions: assign(({ event }) => {
+                throw (event as unknown as { output: { payload: unknown } }).output.payload;
+            }),
+        };
+        if (t.guard !== undefined) rewritten.guard = t.guard;
+        return rewritten;
+    });
+    return { ...node, onDone };
+}
+
+// `leafModeNames` are the children that lowered from `defineMode` (now
+// mini-compounds). The re-throw default applies to *leaf modes* only — exactly
+// as it applied to plain-leaf children before unification. Real nested
+// compounds keep their prior behavior (their error END is NOT rewritten here;
+// it surfaces as a `$end_error` final at this level).
 function rewriteErrorBucketAtLevel(
     states: Record<string, LoweredState>,
+    leafModeNames: ReadonlySet<string>,
 ): Record<string, LoweredState> {
     const out: Record<string, LoweredState> = {};
     for (const [name, node] of Object.entries(states)) {
-        if (isLeaf(node)) {
+        if (isFinal(node)) {
+            out[name] = node;
+        } else if (isLeaf(node)) {
             out[name] = rewriteErrorBucketToReThrow(node);
+        } else if (isCompound(node) && leafModeNames.has(name)) {
+            out[name] = rewriteCompoundErrorBucketToReThrow(node);
         } else {
             out[name] = node;
         }
@@ -515,6 +557,17 @@ function joinPath(parent: string, name: string): string {
     return parent === "" ? name : `${parent}.${name}`;
 }
 
+// The child names in `modes` that lowered from `defineMode` (carrier
+// `__kind === "leaf"`) — i.e. mini-compounds (SPEC 011). Used to scope the
+// "omitted routes.error → re-throw" rewrite to leaf modes only.
+function leafModeNamesOf(modes: Record<string, unknown>): ReadonlySet<string> {
+    const out = new Set<string>();
+    for (const [name, value] of Object.entries(modes)) {
+        if (asCarrier(value).__kind === "leaf") out.add(name);
+    }
+    return out;
+}
+
 function buildStatesMap(
     modes: Record<string, unknown>,
     parentLift: LiftContext | undefined,
@@ -528,17 +581,13 @@ function buildStatesMap(
         const carrier = asCarrier(value);
 
         if (carrier.__kind === "leaf") {
+            // SPEC 011 §Desugaring (DD-029): every leaf now has a `behavior` and
+            // lowers to a mini-compound (`$run`/`$wait` + LOCAL `$end_*`). The
+            // active/passive split is gone — `buildActiveState` discriminates on
+            // `config.kind` (default "active") internally and returns a compound.
             const config = carrier.config;
-            if ("behavior" in config && config.behavior !== undefined) {
-                const slot: LeafSlot = { kind: "leaf", path, config };
-                out[name] = buildActiveState(slot, parentLift, deps);
-            } else {
-                out[name] = buildPassiveState(
-                    config as PassiveModeConfig<InternalCtx, { type: string }>,
-                    parentLift,
-                    deps,
-                );
-            }
+            const slot: LeafSlot = { kind: "leaf", path, config };
+            out[name] = buildActiveState(slot, parentLift, deps);
             continue;
         }
 
@@ -569,11 +618,13 @@ function buildStatesMap(
 
         // 2. If this compound omits `routes.error`, child END references in
         //    `routes.error` must re-throw above this compound (spec 008
-        //    line 87). Rewrite those leaf transitions before the injection
-        //    pass so the `error` bucket isn't injected as a final.
+        //    line 87). Rewrite those transitions before the injection pass so
+        //    the `error` bucket isn't injected as a final. Only LEAF children
+        //    (now mini-compounds, SPEC 011) get the re-throw — track their
+        //    names so real nested compounds keep their prior behavior.
         const childStatesAfterErrorFixup =
             cfg.routes.error === undefined
-                ? rewriteErrorBucketAtLevel(childStatesRaw)
+                ? rewriteErrorBucketAtLevel(childStatesRaw, leafModeNamesOf(cfg.modes))
                 : childStatesRaw;
 
         // 3. Inject per-outcome `$end_*` finals. `outputCb` and `childLift`

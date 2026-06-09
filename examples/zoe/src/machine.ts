@@ -7,6 +7,9 @@ import { listening } from "./states/listening.js";
 import { socratic } from "./states/socratic.js";
 import type { AgentContext, AgentEvents } from "./types.js";
 
+// SPEC 011: `socratic` is now a single active leaf (not a compound), and
+// `listening` is a `start: "event"` mode whose behavior appends the user
+// message — so the former `appendUserMessage` named action is gone.
 export const agentMachine = defineAgent<
     AgentContext,
     AgentEvents,
@@ -20,15 +23,7 @@ export const agentMachine = defineAgent<
 >({
     id: "agent",
     initial: "listening",
-    context: { messages: [] },
+    context: { messages: [], evalRetries: 0 },
     events: {} as AgentEvents,
-    actions: {
-        appendUserMessage: ({ context, event }) => ({
-            messages: [
-                ...context.messages,
-                { role: "user" as const, content: event.text },
-            ],
-        }),
-    },
     modes: { listening, classifying, greetings, socratic, improvising },
 });
