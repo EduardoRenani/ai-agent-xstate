@@ -1,0 +1,255 @@
+# @eduardorenani/atlasjs
+
+> Mode-based agent orchestration on top of XState v5. You build an agent as a set
+> of **modes** (one mental state at a time); each mode runs a `behavior` and
+> returns a `ModeResult` that either LEAVES the mode (an `outcome`) or STAYS and
+> re-runs (a `stay`). XState is an internal dependency — it never appears in this
+> API. ESM only, Node >= 20. `xstate@^5` is a peer dependency.
+
+This file is an LLM-oriented API reference. It is dense and complete by design.
+Types are the source of truth; signatures below mirror `src/types.ts`.
+
+## Mental model
+
+- A **mode** = one unit of agentic work with a single goal.
+- `behavior(args) => Promise<ModeResult>` is the only place work happens.
+- `ModeResult` is a discriminated union (mutually exclusive):
+  - `{ outcome: "achieved" | "abandoned", payload }` → **LEAVE** the mode. Dispatched by `routes`; each route carries a `target`.
+  - `{ stay: "replay" | "waitOnEvent", payload }` → **STAY** in the mode and re-run. Dispatched by `stay`; no `target`.
+- A rejected/throwing `behavior` is caught and routed through a synthesized **error** bucket (`routes.error`). Users never return `error`.
+- **`start`** is a single activation bit:
+  - `start: "run"` (default) — entering the mode RUNS the behavior immediately (a "dry run"; `event` is `undefined`).
+  - `start: "event"` — entering the mode PARKS it; the behavior runs only when a declared event arrives (`event` is the event, never `undefined`).
+- `stay` semantics:
+  - `"replay"` — re-run the behavior NOW (run-mode: no event; event-mode: the same event).
+  - `"waitOnEvent"` — re-run when the NEXT declared event (`events`) arrives.
+- This unifies what used to be "active" vs "passive" modes: one primitive both does work and waits for input.
+
+## Exports
+
+Runtime: `defineMode`, `defineCompoundMode`, `defineAgent`, `startAgent`, `END`, `RE_THROW`.
+Types: `Mode`, `CompoundMode`, `ModeConfig`, `RunModeConfig`, `EventModeConfig`, `CompoundModeConfig`, `AgentConfig`, `ModesMap`, `ModeResult`, `Outcome`, `Stay`, `Routes`, `StayMap`, `RouteList`, `RouteTarget`, `ErrorRouteTarget`, `CompoundContext`, `AgentActor`, `AgentSnapshot`, `AgentInspectionEvent`, `AgentErrorInfo`, `StartAgentOptions`, `JsonValue`, `JsonObject`, `JsonArray`, `JsonPrimitive`, `JsonCompatible`.
+
+## Core types
+
+```ts
+type Outcome = "achieved" | "abandoned";            // LEAVE
+type Stay = "replay" | "waitOnEvent";               // STAY (re-run)
+
+type ModeResult<TPayload = unknown> =
+  | { outcome: Outcome; stay?: never; payload: TPayload }
+  | { stay: Stay; outcome?: never; payload: TPayload };
+
+// A single exit. `when(payload)` is an optional guard (deps-free). `target` is a
+// sibling mode name or END. `assign` returns Partial<TContext> merged before the
+// transition.
+type ExitEntry<TContext, TPayload, TDeps = {}> = {
+  when?: (payload: TPayload) => boolean;
+  target: string | END;                              // RouteTarget
+  assign?: (a: { context: TContext; payload: TPayload; deps: TDeps }) => Partial<TContext>;
+};
+
+// A continuation (re-run). No target, no when — the behavior already chose it.
+type StayEntry<TContext, TPayload, TDeps = {}> = {
+  assign?: (a: { context: TContext; payload: TPayload; deps: TDeps }) => Partial<TContext>;
+};
+
+// Error route. `when`/`assign` receive the RAW error (unknown). `target` may be
+// RE_THROW (re-propagate above the actor; `assign` ignored).
+type ErrorEntry<TContext, TDeps = {}> = {
+  when?: (error: unknown) => boolean;
+  target: string | END | RE_THROW;                   // ErrorRouteTarget
+  assign?: (a: { context: TContext; error: unknown; deps: TDeps }) => Partial<TContext>;
+};
+
+// Array form ("first match wins, last entry is the default"): non-last entries
+// MUST carry `when`; the last entry MUST omit it. `[]` is rejected for these.
+type RouteList<E> = readonly [NoWhen<E>] | readonly [WithWhen<E>, ...WithWhen<E>[], NoWhen<E>];
+
+type Routes<TContext, TPayload, TDeps = {}> = {
+  achieved: ExitEntry<…> | RouteList<ExitEntry<…>>;   // required
+  abandoned: ExitEntry<…> | RouteList<ExitEntry<…>>;  // required
+  error?: ErrorEntry<…> | RouteList<ErrorEntry<…>>;    // optional; omitted => re-throw above the actor
+};
+
+type StayMap<TContext, TPayload, TDeps = {}> = {       // all optional
+  replay?: StayEntry<…>;
+  waitOnEvent?: StayEntry<…>;
+};
+```
+
+## defineMode
+
+```ts
+// Run-mode (default): event is TEvents | undefined.
+function defineMode<TContext, TEvents extends {type:string}, TPayload = unknown, TDeps = {}>(
+  config: {
+    start?: "run";
+    events?: readonly TEvents["type"][];               // event types this mode may replay/wait on
+    input: (a: { context: TContext; deps: TDeps }) => unknown;
+    behavior: (a: { input: unknown; event: TEvents | undefined; deps: TDeps }) => Promise<ModeResult<TPayload>>;
+    routes: Routes<TContext, TPayload, TDeps>;
+    stay?: StayMap<TContext, TPayload, TDeps>;
+  }
+): Mode<TContext, TEvents, TPayload, TDeps>;
+
+// Event-mode: required `start: "event"`; event is always TEvents (never undefined).
+function defineMode<…>(config: { start: "event"; events?: …; input: …;
+  behavior: (a: { input: unknown; event: TEvents; deps: TDeps }) => Promise<ModeResult<TPayload>>;
+  routes: …; stay?: …;
+}): Mode<…>;
+```
+
+`input` derives the behavior's `input` from context (+ deps). It runs before each behavior invocation. Keep it cheap and pure.
+
+## defineCompoundMode
+
+A mode containing sub-modes. Children leave the compound by routing `target: END`; the compound's own `routes` then pick the destination in the enclosing scope.
+
+```ts
+function defineCompoundMode<TParentContext, TEvents, TCtx, TModes, TPayload = undefined, TDeps = {}>(
+  config: {
+    context?: { inherit: readonly (keyof TParentContext)[]; local: JsonCompatible<TLocal> }; // optional lexical scope
+    initial: keyof TModes & string;
+    modes: TModes;                                     // map of defineMode / defineCompoundMode
+    output?: (a: { context: <local view>; deps: TDeps }) => TPayload; // payload the parent routes on
+    routes: { achieved: …; abandoned: …; error?: … };  // CompoundRoutes (no `stay` — compounds have no behavior)
+  }
+): CompoundMode<…>;
+```
+
+- With `context`, children see `Pick<TParent, inherit[number]> & typeof local`. `local` resets on re-entry (but a persisted snapshot wins on rehydration).
+- The compound's outcome bucket is whichever bucket of the EXITING child contained `target: END`.
+- `routes.error` omitted on the compound => a child's error END re-throws above the compound.
+
+## defineAgent + startAgent
+
+```ts
+function defineAgent<TContext, TEvents, TModes, TDeps = {}>(config: {
+  id: string;
+  initial: keyof TModes & string;
+  context: JsonCompatible<TContext>;                   // must be JSON round-trippable
+  events: TEvents;                                     // phantom: pass `{} as TEvents`
+  deps?: Readonly<TDeps>;                              // frozen container of external resources
+  modes: TModes;                                       // map of defineMode / defineCompoundMode
+}): /* opaque XState machine */;
+
+function startAgent<TContext, TEvents>(machine, options?: {
+  snapshot?: AgentSnapshot<TContext>;                  // resume a previous turn
+  inspect?: (e: AgentInspectionEvent<TContext>) => void;
+  onError?: (info: AgentErrorInfo<TContext>) => void;  // fires when a rejection escapes routes.error
+}): AgentActor<TContext, TEvents>;                     // { send(event), stop(), getSnapshot() }
+
+type AgentInspectionEvent<TContext> = {
+  type: "transition";
+  from: string; to: string;                            // dot-joined mode paths (synthetic substates masked)
+  context: TContext;                                   // root context AFTER assigns
+  awaiting?: readonly string[];                        // present & non-empty only while PARKED; event types that resume
+};
+
+type AgentErrorInfo<TContext> = { error: unknown; modePath: string; context: TContext; snapshot: AgentSnapshot<TContext> };
+```
+
+`startAgent` is the only runtime boundary; hosts never import from `xstate`. `AgentSnapshot` is opaque — persist `JSON.stringify(snapshot)` and feed it back as `{ snapshot }` next turn.
+
+## Tokens
+
+- `END` (unique symbol) — the ONLY way for a route `target` to leave a `CompoundMode`. The enclosing compound's matching `routes` bucket fires.
+- `RE_THROW` (unique symbol) — valid ONLY on `ErrorEntry.target`. Re-propagates the caught error above the actor instead of transitioning; any `assign` on that entry is ignored.
+
+## Hard rules (these are compile errors or runtime throws)
+
+- No `any` in the public API. `TContext` (root and compound `local`) must satisfy `JsonCompatible<T>` (no `Date`/`Map`/`Set`/functions/class methods) — snapshots must round-trip through JSON.
+- `routes.achieved` and `routes.abandoned` are REQUIRED on every mode. `routes.error` is optional; when omitted, a rejection re-throws above the actor (never silently swallowed).
+- `ModeResult` cannot mix `outcome` and `stay` (enforced via `?: never`).
+- `RouteList` array form: non-last entries MUST have `when`; the last MUST NOT; `[]` is rejected for achieved/abandoned/error.
+- `target` strings name a sibling in the IMMEDIATE enclosing `modes` map. No dotted paths, no XState absolute (`#`) paths — use `END` to exit a compound. Validated at machine-creation time (`defineAgent`).
+- `behavior` is async and pure of XState; all context mutation goes through `assign` callbacks returning `Partial<TContext>`.
+
+## Examples
+
+Event-mode (parks until an event), then a run-mode that does work:
+
+```ts
+import { defineMode, defineAgent, startAgent } from "@eduardorenani/atlasjs";
+type Ctx = { question: string; answer: string };
+type Ev = { type: "ASK"; question: string };
+
+const listening = defineMode<Ctx, Ev, { question: string }>({
+  start: "event",
+  events: ["ASK"],
+  input: () => null,
+  behavior: async ({ event }) => ({ outcome: "achieved", payload: { question: event.question } }),
+  routes: {
+    achieved: { target: "answering", assign: ({ payload }) => ({ question: payload.question }) },
+    abandoned: { target: "answering" },
+  },
+});
+
+const answering = defineMode<Ctx, Ev, { answer: string }>({
+  input: ({ context }) => ({ question: context.question }),
+  behavior: async ({ input }) => {
+    const { question } = input as { question: string };
+    return { outcome: "achieved", payload: { answer: await callLLM(question) } };
+  },
+  routes: {
+    achieved: { target: "listening", assign: ({ payload }) => ({ answer: payload.answer }) },
+    abandoned: { target: "listening" },
+  },
+});
+
+const machine = defineAgent<Ctx, Ev, { listening: typeof listening; answering: typeof answering }>({
+  id: "qa", initial: "listening", context: { question: "", answer: "" }, events: {} as Ev,
+  modes: { listening, answering },
+});
+const actor = startAgent<Ctx, Ev>(machine);
+actor.send({ type: "ASK", question: "What is a mode?" });
+```
+
+Self-suspending mode (teach → park for reply → evaluate → replay or leave):
+
+```ts
+const socratic = defineMode<Ctx, Ev, P>({
+  events: ["MESSAGE"],                                 // run-mode that may replay/wait on MESSAGE
+  input: ({ context }) => ({ messages: context.messages }),
+  behavior: async ({ event, deps }) => {
+    if (event?.type === "MESSAGE") {
+      return understood ? { outcome: "achieved", payload } : { stay: "replay", payload }; // re-teach
+    }
+    await deps.teach(...);                             // dry-run entry: teach
+    return { stay: "waitOnEvent", payload };           // park for the reply
+  },
+  routes: { achieved: { target: "classifying" }, abandoned: { target: "classifying" } },
+  stay: { waitOnEvent: {}, replay: {} },
+});
+```
+
+Multi-turn host (snapshot rehydration):
+
+```ts
+async function runTurn(text: string, snapshot?: AgentSnapshot<Ctx>): Promise<AgentSnapshot<Ctx>> {
+  let done!: () => void; const ready = new Promise<void>(r => (done = r));
+  const actor = startAgent<Ctx, Ev>(machine, {
+    snapshot,
+    inspect: (e) => { if (e.awaiting?.length) done(); }, // resumed & parked again
+  });
+  actor.send({ type: "ASK", question: text });
+  await ready;
+  const next = actor.getSnapshot(); actor.stop(); return next;
+}
+```
+
+## Gotchas for code-generation
+
+- Every mode needs `input`, `behavior`, `routes`. There is no `{ on: {} }` "passive" mode; to "wait", use `start: "event"` + `events`, or `stay: "waitOnEvent"`. A do-nothing terminal sink = an event-mode with `events: []`.
+- A run-mode's `behavior` MAY receive `event: undefined` (the dry-run entry) — narrow with `event?.type === "..."`.
+- To re-run a mode, return a `stay` and declare the matching `stay.<key>` bucket; returning `stay` with no matching bucket has no continuation wired.
+- Routing decisions that need a dependency belong in `behavior`, not in `when` (which is deps-free).
+- Compounds have `routes` (achieved/abandoned/error) but NO `stay` and NO `behavior`.
+
+## Links
+
+- Types (source of truth): https://github.com/EduardoRenani/atlas/blob/main/packages/atlas/src/types.ts
+- Spec — unified modes: https://github.com/EduardoRenani/atlas/blob/main/docs/specs/011-self-suspending-modes.md
+- Worked example (CLI agent): https://github.com/EduardoRenani/atlas/tree/main/examples/zoe
+- README: https://github.com/EduardoRenani/atlas/blob/main/packages/atlas/README.md
