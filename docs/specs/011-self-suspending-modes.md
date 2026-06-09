@@ -2,16 +2,14 @@
 
 ## Status
 
-Draft.
+Completed. Implemented in `packages/atlas/` and exercised end-to-end by the lib
+suite and `examples/zoe/`. Shipped in `@eduardorenani/atlasjs@0.1.0-alpha.5`.
 
-> This draft supersedes an earlier direction in this same file (a `suspend`
+> This spec supersedes an earlier direction in this same file (a `suspend`
 > outcome that paired a leaf with a synthetic wait-state). The debate moved
 > past it: instead of adding one outcome, this spec **unifies the `Mode`
 > primitive** so the passive/active split stops being two mutually-exclusive
-> *types* and becomes a single mode with one activation **bit**. The shape
-> below is validated end-to-end (type-checks under `--strict`) in the
-> prototype `temp-diagrams/011-self-suspending-modes.proto.ts`. Names are
-> working names; open points are in `## Clarifications`.
+> *types* and becomes a single mode with one activation **bit**.
 
 ## Goal
 
@@ -363,8 +361,7 @@ exit) need not be wrapped — it can stay a plain leaf.
    the unified mode keeps a `routes.error` bucket or relies solely on host-side
    `onError`. Likely keep both, unchanged.
 
-> Visual review scaffolding (the Mermaid C4 dynamic diagram of the runtime
-> flow, per the SDD loop) is deferred to the implementation pass. The
-> type-level prototype lives at
-> `temp-diagrams/011-self-suspending-modes.proto.ts` and type-checks under
-> `--strict`.
+> The type-level prototype used during the design debate
+> (`temp-diagrams/011-self-suspending-modes.proto.ts`) was review-only
+> scaffolding and was removed on finalize. The shipped implementation lives in
+> `packages/atlas/` and is covered by the lib suite + `examples/zoe/`.
