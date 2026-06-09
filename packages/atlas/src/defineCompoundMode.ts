@@ -111,7 +111,6 @@ export type CompoundModeCarrier<
  *     modes: { thinking, evaluating },
  *     routes: {
  *         achieved:  { target: "listening" },
- *         retry:     [],
  *         abandoned: { target: "listening" },
  *     },
  * });

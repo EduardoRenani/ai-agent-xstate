@@ -76,36 +76,45 @@ export type JsonCompatible<T> =
     T extends object ? { [K in keyof T]: JsonCompatible<T[K]> } :
     never;
 
-// ── Outcomes & ModeOutput ────────────────────────────────────────────
+// ── Result: outcome (LEAVE) XOR stay (STAY) ──────────────────────────
+
+// SPEC 011 §The model: the behavior's return value has two natures.
 
 /**
- * The three intentional outcomes a Mode's `behavior` can return:
+ * SPEC 011: the two **LEAVE** outcomes — a judgement on the mode's goal. Each
+ * is dispatched by `routes` and carries a `target`.
  *
- * - **`"achieved"`** — the Mode's work succeeded. Dispatch via `routes.achieved`.
- * - **`"retry"`** — the Mode should run again on the same state (self-loop).
- *   Dispatch via `routes.retry`.
- * - **`"abandoned"`** — the Mode's work failed in an *expected* way (give up,
- *   not crash). Dispatch via `routes.abandoned`.
+ * - **`"achieved"`** — the goal was met. Dispatch via `routes.achieved`.
+ * - **`"abandoned"`** — the work gave up in an *expected* way (not a crash).
+ *   Dispatch via `routes.abandoned`.
  *
- * A fourth outcome (`error`) exists, but it is **synthesized by the wrapper**
- * when `behavior` rejects — users never return it, and it is intentionally
- * absent from this union.
+ * A third bucket (`error`) is **synthesized by the wrapper** when `behavior`
+ * rejects — users never return it, and it is absent from this union.
  */
-export type Outcome = "achieved" | "retry" | "abandoned";
+export type Outcome = "achieved" | "abandoned";
 
 /**
- * The return type of an active Mode's `behavior`. The wrapper inspects
- * `outcome` to pick the right route bucket and threads `payload` into the
- * matched route's `when` / `assign` callbacks.
+ * SPEC 011: the two **STAY** continuations — remain in the mode and re-run the
+ * behavior. Neither carries a `target`; both are dispatched by `stay`.
  *
- * @template TPayload  Shape of the payload. Constrains the inputs of all
- *                     `routes.*.when` and `routes.*.assign` callbacks on the
- *                     same Mode, so payload-driven dispatch stays type-safe.
+ * - **`"replay"`** — re-run immediately (active: no event; passive: the same event).
+ * - **`"waitOnEvent"`** — re-run when the next declared event arrives.
  */
-export type ModeOutput<TPayload = unknown> = {
-    outcome: Outcome;
-    payload: TPayload;
-};
+export type Stay = "replay" | "waitOnEvent";
+
+/**
+ * SPEC 011 §Surface: the behavior speaks ONLY through this return value — a
+ * union of two natures, LEAVE (`outcome`) XOR STAY (`stay`). The XOR is
+ * enforced with `?: never` on the opposite discriminant so the two cannot be
+ * mixed: a plain key-presence union would let `{ outcome, stay }` through
+ * (excess-property checking treats both as "known" keys of the union).
+ *
+ * @template TPayload  Payload threaded into the matched `routes` / `stay`
+ *                     bucket's `assign` (and `routes.*.when`).
+ */
+export type ModeResult<TPayload = unknown> =
+    | { outcome: Outcome; stay?: never; payload: TPayload }
+    | { stay: Stay; outcome?: never; payload: TPayload };
 
 // ── Exit & re-throw tokens ───────────────────────────────────────────
 
@@ -199,24 +208,21 @@ export type ExitEntry<
 };
 
 /**
- * A single entry in `routes.retry`. **Has no `target`** — retry is always a
- * structural self-loop on the same Mode (DD-014). Supplying `target` here is
- * a compile error.
- *
- * - `when(payload)` — guard. Deps-free.
- * - `assign({ context, payload, deps })` — return a `Partial<TContext>` to merge
- *   into context before the self-transition fires.
+ * SPEC 011 §The model: the config for a STAY continuation
+ * (`stay.replay` / `stay.waitOnEvent`). **Has no `target`** — staying re-runs
+ * THIS mode's behavior (the old `retry` self-loop, DD-014, generalized). No
+ * `when`: the behavior already chose the continuation, so there is no
+ * payload-guard. `assign` runs before the re-run.
  *
  * @template TContext  Context shape visible to `assign`.
- * @template TPayload  Payload shape from `ModeOutput<TPayload>`.
+ * @template TPayload  Payload shape from `ModeResult<TPayload>`.
  * @template TDeps     Frozen deps container.
  */
-export type RetryEntry<
+export type StayEntry<
     TContext,
     TPayload,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > = {
-    when?: (payload: TPayload) => boolean;
     assign?: (args: { context: TContext; payload: TPayload; deps: TDeps }) => Partial<TContext>;
 };
 
@@ -284,24 +290,20 @@ export type RouteList<E> =
     | readonly [NoWhen<E>]
     | readonly [WithWhen<E>, ...readonly WithWhen<E>[], NoWhen<E>];
 
-// ── Routes — the four-key map ────────────────────────────────────────
+// ── Routes (exits) & StayMap (continuations) ─────────────────────────
 
 /**
- * The full route table for an active Mode — one bucket per `Outcome`, plus an
- * optional `error` bucket for synthesized errors.
+ * SPEC 011 §The model — `routes` holds ONLY exits: the two LEAVE outcomes, each
+ * carrying a `target` (the SDK-goal completion / abandonment criteria), plus an
+ * optional synthesized `error` bucket. `retry` is gone — continuations live in
+ * `StayMap`, not under a key called "routes".
  *
  * - **`achieved`** (required) — fired when `behavior` returns `outcome: "achieved"`.
- * - **`retry`** (required) — fired when `behavior` returns `outcome: "retry"`.
- *   Pass `readonly []` for "no special handling" (the wrapper just re-enters
- *   the same Mode).
  * - **`abandoned`** (required) — fired when `behavior` returns `outcome: "abandoned"`.
- * - **`error`** (optional) — fired when `behavior` throws / its Promise
- *   rejects. **When omitted, the wrapper re-throws the rejection above the
- *   actor.** This is the only safe default — silently swallowing failures is
- *   not allowed.
+ * - **`error`** (optional) — fired when `behavior` throws. **When omitted, the
+ *   wrapper re-throws above the actor** (spec 010 `onError`). Never swallowed.
  *
- * Each bucket accepts either a single entry or a `RouteList` (first-match-wins
- * array). See `RouteList` for the array-form rules.
+ * Each bucket accepts a single entry or a `RouteList` (first-match-wins array).
  *
  * @template TContext  Context shape visible to `when` / `assign` callbacks.
  * @template TPayload  Payload type returned by `behavior`.
@@ -315,16 +317,33 @@ export type Routes<
     achieved:
         | ExitEntry<TContext, TPayload, TDeps>
         | RouteList<ExitEntry<TContext, TPayload, TDeps>>;
-    retry:
-        | RetryEntry<TContext, TPayload, TDeps>
-        | readonly []
-        | RouteList<RetryEntry<TContext, TPayload, TDeps>>;
     abandoned:
         | ExitEntry<TContext, TPayload, TDeps>
         | RouteList<ExitEntry<TContext, TPayload, TDeps>>;
     error?:
         | ErrorEntry<TContext, TDeps>
         | RouteList<ErrorEntry<TContext, TDeps>>;
+};
+
+/**
+ * SPEC 011 §The model — `stay` holds ONLY continuations: remain in the mode and
+ * re-run the behavior. No `target`. Optional everywhere (a mode that never
+ * stays omits it). Each bucket is a single `StayEntry` (assign only).
+ *
+ * - **`replay`** — re-run now (active: no event; passive: the same event).
+ * - **`waitOnEvent`** — re-run when the next declared event arrives.
+ *
+ * @template TContext  Context shape visible to `assign`.
+ * @template TPayload  Payload type returned by `behavior`.
+ * @template TDeps     Frozen deps container, forwarded to every `assign`.
+ */
+export type StayMap<
+    TContext,
+    TPayload,
+    TDeps extends Record<string, unknown> = Record<string, never>,
+> = {
+    replay?: StayEntry<TContext, TPayload, TDeps>;
+    waitOnEvent?: StayEntry<TContext, TPayload, TDeps>;
 };
 
 /**
@@ -359,7 +378,7 @@ export type CompoundRoutes<
     achieved:
         | ExitEntry<TContext, TPayload, TDeps>
         | RouteList<ExitEntry<TContext, TPayload, TDeps>>;
-    retry: readonly [];
+    // SPEC 011: no `retry` — compounds have no `behavior`, so no continuations.
     abandoned:
         | ExitEntry<TContext, TPayload, TDeps>
         | RouteList<ExitEntry<TContext, TPayload, TDeps>>;
@@ -368,106 +387,87 @@ export type CompoundRoutes<
         | RouteList<ErrorEntry<TContext, TDeps>>;
 };
 
-// ── Event handlers (passive Mode) ────────────────────────────────────
+// ── Mode config (unified — start: "run" | "event") ───────────────────
+
+// SPEC 011 §The model + §Surface. There are no more `on`-only passive leaves
+// and no `EventHandlers` map: EVERY mode has a `behavior`. How a mode is
+// activated is a single bit, `start`: "run" (default) enters by running the
+// behavior immediately; "event" enters parked and runs on a declared event.
+// The ONLY type difference is the behavior's `event` parameter. This **revokes
+// DD-019** (the behavior/on mutual exclusion) and un-phantoms `TEvents`.
 
 /**
- * A single passive transition. Fired when the matching event arrives while
- * the Mode is active. For array-form handlers, first match wins (XState
- * semantics).
+ * SPEC 011: the fields shared by both kinds — everything except the behavior's
+ * `event` type.
  *
- * - `target` — sibling name or `END`. Passive Modes CAN leave a compound on
- *   a particular event.
- * - `actions` — a name (or list of names) referencing entries declared in
- *   `defineAgent.actions`. **Inline callbacks are NOT accepted here** —
- *   that would re-introduce DD-004 churn.
- * - `guard({ context, event, deps })` — optional. The transition only fires
- *   when it returns true. `guard` already had access to mutable context;
- *   adding `deps` does not change what the callback can observe.
+ * - `input` — derive the behavior's input from context (+ deps).
+ * - `events?` — the event types this mode may wait/replay on (drives `stay`).
+ * - `routes` — the two exits (target + assign).
+ * - `stay?` — the two continuations (assign only).
  *
- * @template TContext       Context shape visible to `guard`.
- * @template TEventVariant  The specific event variant this transition handles
- *                          (narrowed from `TEvents` by the discriminant key).
- * @template TDeps          Frozen deps container.
- */
-export type EventTransition<
-    TContext,
-    TEventVariant,
-    TDeps extends Record<string, unknown> = Record<string, never>,
-> = {
-    target?: RouteTarget;
-    actions?: string | readonly string[];
-    guard?: (args: { context: TContext; event: TEventVariant; deps: TDeps }) => boolean;
-};
-
-/**
- * The full `on` map for a passive Mode. Keys are event discriminants
- * (`event.type`); values are one transition or an ordered list of them. The
- * transition's `event` callback argument is automatically narrowed to the
- * matching event variant via `Extract<TEvents, { type: K }>`.
- *
- * @template TContext  Context shape visible to `guard`.
- * @template TEvents   The agent's full event union (each variant has a `type`).
+ * @template TContext  Context shape this mode observes.
+ * @template TEvents   The agent's full event union (no longer phantom).
+ * @template TPayload  Payload returned by `behavior`.
  * @template TDeps     Frozen deps container.
  */
-export type EventHandlers<
-    TContext,
-    TEvents extends { type: string },
-    TDeps extends Record<string, unknown> = Record<string, never>,
-> = {
-    [K in TEvents["type"]]?:
-        | EventTransition<TContext, Extract<TEvents, { type: K }>, TDeps>
-        | readonly EventTransition<TContext, Extract<TEvents, { type: K }>, TDeps>[];
-};
-
-// ── Mode config (discriminated union) ────────────────────────────────
-
-/**
- * Active Mode shape — runs an async `behavior` and dispatches on its
- * `ModeOutput`. Mutually exclusive with `PassiveModeConfig`; mixing
- * `behavior` and `on` in the same config is a compile error (DD-019).
- *
- * @template TContext  Context shape visible to `input` / `routes.*.assign`.
- * @template TEvents   Phantom — kept for symmetry with the passive variant.
- *                     Active Modes don't observe events directly.
- * @template TPayload  Payload type returned by `behavior` and threaded into
- *                     `routes.*.when` / `routes.*.assign`.
- * @template TDeps     Frozen deps container, available in `input` / `behavior`
- *                     / every `routes.*.assign`.
- */
-export type ActiveModeConfig<
+export type CommonModeConfig<
     TContext,
     TEvents extends { type: string },
     TPayload,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > = {
     input: (args: { context: TContext; deps: TDeps }) => unknown;
-    behavior: (args: { input: unknown; deps: TDeps }) => Promise<ModeOutput<TPayload>>;
+    events?: readonly TEvents["type"][];
     routes: Routes<TContext, TPayload, TDeps>;
+    stay?: StayMap<TContext, TPayload, TDeps>;
 };
 
 /**
- * Passive Mode shape — waits for external events. Mutually exclusive with
- * `ActiveModeConfig`.
- *
- * @template TContext  Context shape visible to `on[event].guard`.
- * @template TEvents   The agent's full event union.
- * @template TDeps     Frozen deps container, forwarded to every `on[*].guard`.
+ * SPEC 011: `start: "run"` (default) — the mode enters by RUNNING the behavior
+ * immediately (no event yet, `event: undefined`); `replay` re-runs with no
+ * event. `start` is optional (run is the default).
  */
-export type PassiveModeConfig<
+export type RunModeConfig<
     TContext,
     TEvents extends { type: string },
+    TPayload,
     TDeps extends Record<string, unknown> = Record<string, never>,
-> = {
-    on: EventHandlers<TContext, TEvents, TDeps>;
+> = CommonModeConfig<TContext, TEvents, TPayload, TDeps> & {
+    start?: "run";
+    behavior: (args: {
+        input: unknown;
+        event: TEvents | undefined;
+        deps: TDeps;
+    }) => Promise<ModeResult<TPayload>>;
 };
 
 /**
- * The discriminated union of Mode config shapes. TypeScript picks the variant
- * structurally — by which keys you supply.
+ * SPEC 011: `start: "event"` — the mode enters by PARKING; the behavior runs
+ * only when a declared event arrives, so `event` is never `undefined` (no
+ * guard). `replay` keeps the same event; `waitOnEvent` swaps for the next.
+ */
+export type EventModeConfig<
+    TContext,
+    TEvents extends { type: string },
+    TPayload,
+    TDeps extends Record<string, unknown> = Record<string, never>,
+> = CommonModeConfig<TContext, TEvents, TPayload, TDeps> & {
+    start: "event";
+    behavior: (args: {
+        input: unknown;
+        event: TEvents;
+        deps: TDeps;
+    }) => Promise<ModeResult<TPayload>>;
+};
+
+/**
+ * SPEC 011: the union of the two mode shapes, discriminated by `start`.
+ * `defineMode` resolves it via overloads — the event variant's required
+ * `start: "event"` is the more specific match.
  *
  * @template TContext  Context shape this Mode observes.
  * @template TEvents   The agent's full event union.
- * @template TPayload  Payload type for the active variant. Ignored by passive.
+ * @template TPayload  Payload type returned by `behavior`.
  * @template TDeps     Frozen deps container.
  */
 export type ModeConfig<
@@ -476,8 +476,8 @@ export type ModeConfig<
     TPayload,
     TDeps extends Record<string, unknown> = Record<string, never>,
 > =
-    | ActiveModeConfig<TContext, TEvents, TPayload, TDeps>
-    | PassiveModeConfig<TContext, TEvents, TDeps>;
+    | RunModeConfig<TContext, TEvents, TPayload, TDeps>
+    | EventModeConfig<TContext, TEvents, TPayload, TDeps>;
 
 // ── Opaque mode markers ──────────────────────────────────────────────
 
@@ -743,12 +743,21 @@ export type AgentConfig<
  *   shape directly.
  * - `context` is the root `TContext` AFTER the transition's assigns have
  *   run.
+ * - `awaiting` (SPEC 011 Clarification #6) — readiness, surfaced explicitly
+ *   rather than inferred from the (now-masked) path. Present and **non-empty**
+ *   ONLY when the agent is parked in a mode's `$wait` substate; it lists the
+ *   event types that will resume the agent. Absent/`undefined` while the agent
+ *   is running (`$run`). Typed as `readonly string[]` rather than the agent's
+ *   `TEvents["type"]` union because `AgentInspectionEvent` is not threaded with
+ *   `TEvents` — keeping the readiness signal a flat list of event-type strings
+ *   avoids propagating a new generic through the whole actor surface.
  */
 export type AgentInspectionEvent<TContext> = {
     type: "transition";
     from: string;
     to: string;
     context: TContext;
+    awaiting?: readonly string[];
 };
 
 declare const agentSnapshotBrand: unique symbol;

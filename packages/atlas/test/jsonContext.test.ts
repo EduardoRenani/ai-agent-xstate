@@ -11,9 +11,32 @@ import { describe, expect, test } from "vitest";
 import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
 import { defineCompoundMode } from "../src/defineCompoundMode.ts";
-import type { ModeOutput } from "../src/types.ts";
+import type { ModeResult } from "../src/types.ts";
 
 type Events = { type: "ADVANCE" } | { type: "MESSAGE"; text: string };
+
+// SPEC 011: there is no more `{ on: {} }` passive leaf. A terminal sink — a mode
+// the agent enters and never leaves — is an event-mode that awaits no events, so
+// it parks forever; its `routes` are unreachable scaffolding (target self so
+// `validateTargets` is satisfied). Observably identical to the old `{ on: {} }`
+// sink in these tests, which are only routed INTO and never exited.
+const sink = <C>(self: string) =>
+    defineMode<C, Events>({
+        start: "event",
+        events: [],
+        input: () => null,
+        behavior: async () => ({ outcome: "achieved", payload: undefined }),
+        routes: { achieved: { target: self }, abandoned: { target: self } },
+    });
+
+// SPEC 011: every mode now lowers to a mini-compound ($run/$wait/$end_*), so raw
+// XState `snapshot.value` is nested (`{ idle: "$wait" }`) instead of the flat
+// string `"idle"` it was when leaves were plain states. These tests drive the
+// raw actor (not `startAgent`, which masks the synthetic substates), so they read
+// the top-level mode name off the value. This adapts the wait *mechanism* only —
+// the asserted behavior (which mode the agent lands in) is unchanged.
+const modeOf = (value: unknown): string =>
+    typeof value === "string" ? value : Object.keys(value as object)[0];
 
 describe("JSON.stringify(context) round-trip — no deps leakage", () => {
     test("basic agent context survives stringify/parse to a structurally equal value", async () => {
@@ -23,7 +46,7 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
         const probe = defineMode<Ctx, Events, undefined, Deps>({
             input: ({ context }) => context.messages,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: {
                     target: "done",
@@ -32,11 +55,10 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
                         messages: [...context.messages, "ran"],
                     }),
                 },
-                retry: {},
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }, Deps>({
             id: "json",
@@ -66,14 +88,13 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
         const probe = defineMode<Ctx, Events, undefined>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: "done" },
-                retry: {},
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, { probe: typeof probe; done: typeof done }>({
             id: "json-undef",
@@ -112,23 +133,21 @@ describe("synthetic compound-local slot persistence", () => {
         const innerBump = defineMode<ChildCtx, Events, undefined>({
             input: ({ context }) => context.attempts,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: {
                     target: "settled",
                     assign: ({ context }) => ({ attempts: context.attempts + 1 }),
                 },
-                retry: {},
                 abandoned: { target: "settled" },
             },
         });
         const innerSettled = defineMode<ChildCtx, Events, undefined>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: {},
                 abandoned: { target: END },
             },
         });
@@ -142,11 +161,10 @@ describe("synthetic compound-local slot persistence", () => {
             modes: { bump: innerBump, settled: innerSettled },
             routes: {
                 achieved: { target: "idle" },
-                retry: [],
                 abandoned: { target: "idle" },
             },
         });
-        const idle = defineMode<RootCtx, Events>({ on: {} });
+        const idle = sink<RootCtx>("idle");
 
         const machine = defineAgent<RootCtx, Events, { inner: typeof inner; idle: typeof idle }>({
             id: "slot-outside",
@@ -160,7 +178,7 @@ describe("synthetic compound-local slot persistence", () => {
 
         await new Promise<void>((resolve) => {
             const sub = actor.subscribe((snap) => {
-                if (snap.value === "idle") {
+                if (modeOf(snap.value) === "idle") {
                     sub.unsubscribe();
                     resolve();
                 }
@@ -189,7 +207,7 @@ describe("`when` predicates still route correctly after spec 005 changes", () =>
         const probe = defineMode<Ctx, Events, P>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "achieved", payload: { tag: "y" } } satisfies ModeOutput<P>),
+                ({ outcome: "achieved", payload: { tag: "y" } } satisfies ModeResult<P>),
             routes: {
                 achieved: [
                     {
@@ -202,12 +220,11 @@ describe("`when` predicates still route correctly after spec 005 changes", () =>
                         assign: () => ({ last: "y-branch" }),
                     },
                 ],
-                retry: {},
                 abandoned: { target: "yLanding" },
             },
         });
-        const xLanding = defineMode<Ctx, Events>({ on: {} });
-        const yLanding = defineMode<Ctx, Events>({ on: {} });
+        const xLanding = sink<Ctx>("xLanding");
+        const yLanding = sink<Ctx>("yLanding");
 
         const machine = defineAgent<Ctx, Events, {
             probe: typeof probe;
@@ -224,7 +241,7 @@ describe("`when` predicates still route correctly after spec 005 changes", () =>
         const actor = createActor(machine).start();
         await new Promise<void>((resolve) => {
             const sub = actor.subscribe((snap) => {
-                if (snap.value === "yLanding") {
+                if (modeOf(snap.value) === "yLanding") {
                     sub.unsubscribe();
                     resolve();
                 }

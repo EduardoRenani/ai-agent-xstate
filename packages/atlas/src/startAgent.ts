@@ -51,6 +51,13 @@ export function startAgent<TContext, TEvents extends { type: string }>(
     options?: StartAgentOptions<TContext>,
 ): AgentActor<TContext, TEvents> {
     let previousPath: string | undefined;
+    // SPEC 011 Clarification #6: dedup must also track readiness. Masking
+    // collapses `foo.$run` and `foo.$wait` to the same `"foo"`, so a within-mode
+    // `$run → $wait` (or `$wait → $run`) transition would otherwise be deduped
+    // away by the path comparison — swallowing the readiness signal the host
+    // needs. Track "was parked" alongside the path so a running↔parked flip in
+    // the same masked mode still emits.
+    let previouslyParked = false;
     const userInspect = options?.inspect;
     const userOnError = options?.onError;
 
@@ -67,16 +74,31 @@ export function startAgent<TContext, TEvents extends { type: string }>(
                 const snap = raw.snapshot as unknown as {
                     value: unknown;
                     context: TContext;
+                    // SPEC 011 Clarification #6: XState v5's `getMeta()` returns a
+                    // record keyed by each ACTIVE state-node id → that node's
+                    // `meta`. A parked mode's active leaf is its `$wait`, so the
+                    // `atlasAwaiting` we stamped in `buildWaitState` surfaces here.
+                    getMeta: () => Record<string, unknown>;
                 };
                 const next = formatModePath(snap.value);
-                if (next === previousPath) return;
+                // SPEC 011 Clarification #6: readiness is reported explicitly via
+                // `awaiting` (the path is now masked, so "parked vs running" can no
+                // longer be inferred from it). Scan the active states' meta for
+                // `atlasAwaiting`; when found, the agent is parked in a `$wait`.
+                const awaiting = readAwaiting(snap.getMeta());
+                const parked = awaiting !== undefined;
+                // Emit when EITHER the masked path or the parked/running state
+                // changed — so a within-mode `$run ↔ $wait` flip is not deduped.
+                if (next === previousPath && parked === previouslyParked) return;
                 const from = previousPath ?? "(init)";
                 previousPath = next;
+                previouslyParked = parked;
                 userInspect({
                     type: "transition",
                     from,
                     to: next,
                     context: snap.context,
+                    ...(awaiting !== undefined ? { awaiting } : {}),
                 });
             }
             : undefined,
@@ -119,6 +141,22 @@ export function startAgent<TContext, TEvents extends { type: string }>(
         },
         getSnapshot: () => buildAgentSnapshot<TContext>(xstateActor.getPersistedSnapshot()),
     };
+}
+
+// SPEC 011 Clarification #6: recover the parked mode's waited-on event types
+// from the active states' `meta`. `getMeta()` returns `{ [stateNodeId]: meta }`
+// for every active state; a parked mode's `$wait` leaf carries
+// `meta.atlasAwaiting`. Returns the event-type list when found (so `awaiting`
+// is present and non-empty), else `undefined` (the agent is running in `$run`).
+function readAwaiting(metaByNode: Record<string, unknown>): readonly string[] | undefined {
+    for (const meta of Object.values(metaByNode)) {
+        if (typeof meta !== "object" || meta === null) continue;
+        const awaiting = (meta as { atlasAwaiting?: unknown }).atlasAwaiting;
+        if (Array.isArray(awaiting) && awaiting.length > 0) {
+            return awaiting as readonly string[];
+        }
+    }
+    return undefined;
 }
 
 function buildAgentSnapshot<TContext>(persisted: Snapshot<unknown>): AgentSnapshot<TContext> {

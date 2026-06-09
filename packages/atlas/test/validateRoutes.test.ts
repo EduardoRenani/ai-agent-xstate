@@ -17,19 +17,15 @@ function activeLeaf(routes: object): { readonly __kind: "leaf"; readonly config:
     };
 }
 
-function passiveLeaf(): { readonly __kind: "leaf"; readonly config: object } {
-    return {
-        __kind: "leaf",
-        config: { on: {} },
-    };
-}
+// SPEC 011: there are no more passive (`{ on: {} }`) leaves — every mode has a
+// `behavior` + `routes`, so `validateRoutes` validates every leaf. The old
+// "passive leaves are skipped" fixture/test is removed (concept deleted).
 
 function compound(
     initial: string,
     modes: Record<string, unknown>,
     routes: unknown = {
         achieved: { target: END },
-        retry: [],
         abandoned: { target: END },
     },
 ): { readonly __kind: "compound"; readonly config: object } {
@@ -45,7 +41,6 @@ describe("validateRoutes() — accepts well-formed shapes", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: {},
                     abandoned: { target: END },
                 }),
             }),
@@ -57,21 +52,8 @@ describe("validateRoutes() — accepts well-formed shapes", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: {},
                     abandoned: { target: END },
                     // no error
-                }),
-            }),
-        ).not.toThrow();
-    });
-
-    test("retry: readonly [] is the explicit no-op default", () => {
-        expect(() =>
-            validateRoutes({
-                foo: activeLeaf({
-                    achieved: { target: END },
-                    retry: [],
-                    abandoned: { target: END },
                 }),
             }),
         ).not.toThrow();
@@ -82,7 +64,6 @@ describe("validateRoutes() — accepts well-formed shapes", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: [{ target: END }],
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -98,7 +79,6 @@ describe("validateRoutes() — accepts well-formed shapes", () => {
                         { when: () => true, target: END },
                         { target: END },
                     ],
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -110,7 +90,6 @@ describe("validateRoutes() — accepts well-formed shapes", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: [],
                     abandoned: { target: END },
                     error: [
                         { when: () => true, target: END },
@@ -121,21 +100,12 @@ describe("validateRoutes() — accepts well-formed shapes", () => {
         ).not.toThrow();
     });
 
-    test("passive leaves are ignored (no `routes`)", () => {
-        expect(() =>
-            validateRoutes({
-                foo: passiveLeaf(),
-            }),
-        ).not.toThrow();
-    });
-
     test("recurses into compounds", () => {
         expect(() =>
             validateRoutes({
                 outer: compound("inner", {
                     inner: activeLeaf({
                         achieved: { target: END },
-                        retry: [],
                         abandoned: { target: END },
                     }),
                 }),
@@ -149,7 +119,6 @@ describe("validateRoutes() — rejects missing required slots", () => {
         expect(() =>
             validateRoutes({
                 foo: activeLeaf({
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -161,22 +130,14 @@ describe("validateRoutes() — rejects missing required slots", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: [],
                 }),
             }),
         ).toThrow(/routes\.abandoned at "foo"[\s\S]*missing/);
     });
 
-    test("missing retry → throws (required by type, even if `[]` would satisfy it)", () => {
-        expect(() =>
-            validateRoutes({
-                foo: activeLeaf({
-                    achieved: { target: END },
-                    abandoned: { target: END },
-                }),
-            }),
-        ).toThrow(/routes\.retry at "foo"[\s\S]*missing/);
-    });
+    // SPEC 011: `retry` is no longer a route slot (continuations live in
+    // `stay`, which is not a RouteList and is not shape-checked here), so the
+    // old "missing retry → throws" test is removed — its premise is gone.
 });
 
 describe("validateRoutes() — rejects empty array on non-retry slots", () => {
@@ -185,7 +146,6 @@ describe("validateRoutes() — rejects empty array on non-retry slots", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: [],
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -197,7 +157,6 @@ describe("validateRoutes() — rejects empty array on non-retry slots", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: [],
                     abandoned: [],
                 }),
             }),
@@ -209,7 +168,6 @@ describe("validateRoutes() — rejects empty array on non-retry slots", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: [],
                     abandoned: { target: END },
                     error: [],
                 }),
@@ -227,7 +185,6 @@ describe("validateRoutes() — rejects `when` placement errors", () => {
                         { target: END },
                         { target: END },
                     ],
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -243,7 +200,6 @@ describe("validateRoutes() — rejects `when` placement errors", () => {
                         { target: END },
                         { target: END },
                     ],
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -258,7 +214,6 @@ describe("validateRoutes() — rejects `when` placement errors", () => {
                         { when: () => true, target: END },
                         { when: () => true, target: END },
                     ],
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -270,7 +225,6 @@ describe("validateRoutes() — rejects `when` placement errors", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: [],
                     abandoned: { target: END },
                     error: [{ target: END }, { target: END }],
                 }),
@@ -278,17 +232,8 @@ describe("validateRoutes() — rejects `when` placement errors", () => {
         ).toThrow(/routes\.error\[0\] at "foo"[\s\S]*shadow/);
     });
 
-    test("retry array — same rules apply (last with when)", () => {
-        expect(() =>
-            validateRoutes({
-                foo: activeLeaf({
-                    achieved: { target: END },
-                    retry: [{ when: () => true }, { when: () => true }],
-                    abandoned: { target: END },
-                }),
-            }),
-        ).toThrow(/routes\.retry\[1\] at "foo"[\s\S]*unguarded default/);
-    });
+    // SPEC 011: `retry` is gone — no RouteList shape rules apply to it (the old
+    // "retry array — same rules apply" test is removed with its slot).
 });
 
 describe("validateRoutes() — rejects malformed slot values", () => {
@@ -297,7 +242,6 @@ describe("validateRoutes() — rejects malformed slot values", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: "not an object",
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -309,7 +253,6 @@ describe("validateRoutes() — rejects malformed slot values", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: null,
-                    retry: [],
                     abandoned: { target: END },
                 }),
             }),
@@ -324,7 +267,6 @@ describe("validateRoutes() — error message format", () => {
                 outer: compound("inner", {
                     inner: activeLeaf({
                         achieved: [],
-                        retry: [],
                         abandoned: { target: END },
                     }),
                 }),
@@ -340,7 +282,6 @@ describe("validateRoutes() — error message format", () => {
             validateRoutes({
                 foo: activeLeaf({
                     achieved: { target: END },
-                    retry: [],
                     abandoned: [],
                 }),
             });
@@ -359,7 +300,6 @@ describe("validateRoutes() — error message format", () => {
                         { target: END },
                         { target: END },
                     ],
-                    retry: [],
                     abandoned: { target: END },
                 }),
             });

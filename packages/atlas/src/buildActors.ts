@@ -3,12 +3,12 @@
 // §Mapping. Spec 005: the wrapper closes over the agent's frozen `deps`
 // reference and threads it into every active leaf's `behavior` callback.
 //
-// One entry per active `Mode` (leaf) slot, keyed by `actorName(path)`. Each
-// entry wraps the user's `behavior` in
-// `fromPromise(async ({ input }) => behavior({ input, deps }))` — the only
-// place the wrapper bridges user code to XState's actor runtime.
-// Passive leaves do not produce an actor; they are atomic states with `on`
-// handlers (handled in slice 5.4).
+// SPEC 011 §Desugaring: EVERY leaf now has a `behavior` and produces an actor
+// (the active/passive split is gone). The actor's `input` is the `$run.invoke`
+// envelope `{ userInput, event }` built by `buildActiveState.buildRunInput`:
+// `userInput` is the user's derived input, `event` is the waking event read
+// from the `$event` slot (`undefined` on a dry run / active entry). This wrapper
+// unpacks it and calls `behavior({ input: userInput, event, deps })`.
 
 import { fromPromise } from "xstate";
 import type { AnyActorLogic } from "xstate";
@@ -24,7 +24,8 @@ export function buildActors(
     for (const slot of slots) {
         if (slot.kind !== "leaf") continue;
         const config = slot.config;
-        if (!("behavior" in config)) continue; // passive leaf — no actor
+        // SPEC 011: every leaf has a `behavior` → every leaf produces an actor.
+        if (!("behavior" in config)) continue;
 
         const name = actorName(slot.path);
         if (name in actors) {
@@ -43,9 +44,19 @@ export function buildActors(
         // frozen reference all callbacks receive.
         const userBehavior = config.behavior as (args: {
             input: unknown;
+            event: unknown;
             deps: Readonly<Record<string, unknown>>;
         }) => Promise<unknown>;
-        actors[name] = fromPromise(async ({ input }) => userBehavior({ input, deps }));
+        // The `$run.invoke.input` envelope is `{ userInput, event }`. Unpack it
+        // and thread the waking `event` through to the behavior (SPEC 011).
+        actors[name] = fromPromise(async ({ input }) => {
+            const envelope = input as { userInput: unknown; event: unknown };
+            return userBehavior({
+                input: envelope.userInput,
+                event: envelope.event,
+                deps,
+            });
+        });
     }
     return actors;
 }

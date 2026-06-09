@@ -9,15 +9,32 @@ import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
 import { defineCompoundMode } from "../src/defineCompoundMode.ts";
 import { END, RE_THROW } from "../src/types.ts";
-import type { ModeOutput } from "../src/types.ts";
+import type { ModeResult } from "../src/types.ts";
 
 type Events = { type: "GO" };
 
 async function settle(): Promise<void> {
-    await new Promise<void>((r) => queueMicrotask(r));
-    await new Promise<void>((r) => queueMicrotask(r));
-    await new Promise<void>((r) => queueMicrotask(r));
+    for (let i = 0; i < 40; i += 1) {
+        await new Promise<void>((r) => queueMicrotask(r));
+    }
 }
+
+// SPEC 011: a leaf is a mini-compound, so raw `snapshot.value` is nested
+// (`{ done: "$wait" }`); read the top-level mode name. Same mode-level assertion
+// as the pre-011 flat string.
+const modeOf = (value: unknown): string =>
+    typeof value === "string" ? value : Object.keys(value as object)[0];
+
+// SPEC 011: terminal sink — an event-mode awaiting no events parks forever; its
+// self-targeting `routes` are unreachable scaffolding. Replaces `{ on: {} }`.
+const sink = <C>(self: string) =>
+    defineMode<C, Events>({
+        start: "event",
+        events: [],
+        input: () => null,
+        behavior: async () => ({ outcome: "achieved", payload: undefined }),
+        routes: { achieved: { target: self }, abandoned: { target: self } },
+    });
 
 describe("compound routes — per-bucket dispatch (achieved / abandoned)", () => {
     test("child END from `achieved` and `abandoned` lower to distinct final substates; compound onDone[] dispatches per bucket", async () => {
@@ -27,20 +44,18 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
         const winning = defineMode<Ctx, Events, undefined>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
         const losing = defineMode<Ctx, Events, undefined>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "abandoned", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "abandoned", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -50,7 +65,6 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
             modes: { winning },
             routes: {
                 achieved: { target: "good", assign: () => ({ last: "win-achieved" }) },
-                retry: [],
                 abandoned: { target: "bad", assign: () => ({ last: "win-abandoned" }) },
             },
         });
@@ -59,12 +73,11 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
             modes: { losing },
             routes: {
                 achieved: { target: "good", assign: () => ({ last: "lose-achieved" }) },
-                retry: [],
                 abandoned: { target: "bad", assign: () => ({ last: "lose-abandoned" }) },
             },
         });
-        const good = defineMode<Ctx, Events>({ on: {} });
-        const bad = defineMode<Ctx, Events>({ on: {} });
+        const good = sink<Ctx>("good");
+        const bad = sink<Ctx>("bad");
 
         // We assert via two separate agents to keep transitions linear.
         const winMachine = defineAgent<Ctx, Events, {
@@ -82,7 +95,7 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
         const winActor = createActor(winMachine).start();
         await settle();
         const winSnap = winActor.getSnapshot();
-        expect(winSnap.value).toBe("good");
+        expect(modeOf(winSnap.value)).toBe("good");
         expect(winSnap.context.last).toBe("win-achieved");
         winActor.stop();
 
@@ -100,7 +113,7 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
         const loseActor = createActor(loseMachine).start();
         await settle();
         const loseSnap = loseActor.getSnapshot();
-        expect(loseSnap.value).toBe("bad");
+        expect(modeOf(loseSnap.value)).toBe("bad");
         expect(loseSnap.context.last).toBe("lose-abandoned");
         loseActor.stop();
     });
@@ -114,10 +127,9 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
         const inner = defineMode<Ctx, Events, undefined>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "abandoned", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "abandoned", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -126,11 +138,10 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
             modes: { inner },
             routes: {
                 achieved: { target: "done", assign: () => ({ picked: "achieved-fired" }) },
-                retry: [],
                 abandoned: { target: "done", assign: () => ({ picked: "abandoned-fired" }) },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, {
             group: typeof group;
@@ -145,7 +156,7 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
 
         const actor = createActor(machine).start();
         await settle();
-        expect(actor.getSnapshot().value).toBe("done");
+        expect(modeOf(actor.getSnapshot().value)).toBe("done");
         expect(actor.getSnapshot().context.picked).toBe("abandoned-fired");
         actor.stop();
     });
@@ -161,7 +172,7 @@ describe("compound routes — `output` callback wiring", () => {
         const work = defineMode<Ctx, Events, undefined>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: {
                     target: END,
@@ -169,7 +180,6 @@ describe("compound routes — `output` callback wiring", () => {
                     // `output` callback reads the context.
                     assign: ({ context }) => ({ counter: context.counter + 7 }),
                 },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -195,12 +205,11 @@ describe("compound routes — `output` callback wiring", () => {
                         assign: ({ payload }) => ({ landed: `small-${payload.counterPlus}` }),
                     },
                 ],
-                retry: [],
                 abandoned: { target: "small" },
             },
         });
-        const big = defineMode<Ctx, Events>({ on: {} });
-        const small = defineMode<Ctx, Events>({ on: {} });
+        const big = sink<Ctx>("big");
+        const small = sink<Ctx>("small");
 
         const machine = defineAgent<Ctx, Events, {
             group: typeof group;
@@ -219,32 +228,34 @@ describe("compound routes — `output` callback wiring", () => {
         // child assigns counter 0 → 7; compound output yields counter+1 = 8.
         // 8 < 100, so the default branch fires.
         const snap = actor.getSnapshot();
-        expect(snap.value).toBe("small");
+        expect(modeOf(snap.value)).toBe("small");
         expect(snap.context.landed).toBe("small-8");
         expect(snap.context.counter).toBe(7);
         actor.stop();
     });
 
-    test("`output` is NOT invoked on retry — the compound never finalizes from a retry", async () => {
-        // The child retries twice, then achieves. The compound's `output`
+    test("`output` is NOT invoked on a `stay:replay` continuation — the compound never finalizes from a replay", async () => {
+        // The child replays twice, then achieves. The compound's `output`
         // counts how many times it ran; we assert it ran exactly once (on
-        // the achieved exit), proving retry never triggers a compound
+        // the achieved exit), proving a continuation never triggers a compound
         // finalisation.
         type Ctx = { attempts: number; outputRuns: number };
 
+        // SPEC 011: the old `outcome: "retry"` continuation is now
+        // `stay: "replay"`, dispatched by the `stay` map (assign only, no target).
         const flaky = defineMode<Ctx, Events, undefined>({
             input: ({ context }) => context.attempts,
             behavior: async ({ input }) => {
                 const n = input as number;
                 return n < 2
-                    ? ({ outcome: "retry", payload: undefined } satisfies ModeOutput<undefined>)
-                    : ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>);
+                    ? ({ stay: "replay", payload: undefined } satisfies ModeResult<undefined>)
+                    : ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>);
             },
             routes: {
                 achieved: { target: END },
-                retry: { assign: ({ context }) => ({ attempts: context.attempts + 1 }) },
                 abandoned: { target: END },
             },
+            stay: { replay: { assign: ({ context }) => ({ attempts: context.attempts + 1 }) } },
         });
 
         // The `output` callback's side-effect — bumping `outputRuns` — is
@@ -260,11 +271,10 @@ describe("compound routes — `output` callback wiring", () => {
             },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, {
             group: typeof group;
@@ -277,19 +287,18 @@ describe("compound routes — `output` callback wiring", () => {
             modes: { group, done },
         });
 
-        // Each retry re-invokes `behavior` — that means three microtask
-        // turns through the XState scheduler before `done` is reached.
-        // `settle()`'s fixed-drain count would race; wait by subscription.
+        // Each replay re-invokes `behavior` — several microtask turns through
+        // the XState scheduler before `done` is reached. Wait by subscription.
         const actor = createActor(machine).start();
         await new Promise<void>((resolve) => {
             const sub = actor.subscribe((snap) => {
-                if (snap.value === "done") {
+                if (modeOf(snap.value) === "done") {
                     sub.unsubscribe();
                     resolve();
                 }
             });
         });
-        expect(actor.getSnapshot().value).toBe("done");
+        expect(modeOf(actor.getSnapshot().value)).toBe("done");
         expect(actor.getSnapshot().context.attempts).toBe(2);
         expect(outputCalls).toBe(1);
         actor.stop();
@@ -304,10 +313,9 @@ describe("compound routes — `output` callback wiring", () => {
         const inner = defineMode<{ messages: readonly string[]; attempts: number }, Events, undefined>({
             input: () => null,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -329,11 +337,10 @@ describe("compound routes — `output` callback wiring", () => {
             },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<RootCtx, Events>({ on: {} });
+        const done = sink<RootCtx>("done");
 
         const machine = defineAgent<RootCtx, Events, {
             group: typeof group;
@@ -348,7 +355,7 @@ describe("compound routes — `output` callback wiring", () => {
 
         const actor = createActor(machine).start();
         await settle();
-        expect(actor.getSnapshot().value).toBe("done");
+        expect(modeOf(actor.getSnapshot().value)).toBe("done");
         // Slice view: inherited `messages` + local `attempts`. No `secret`.
         expect([...seenKeys].sort()).toEqual(["attempts", "messages"]);
         actor.stop();
@@ -366,7 +373,6 @@ describe("compound routes — error bubble propagation", () => {
             },
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
                 // The user explicitly routes the error bucket to END;
                 // because the compound omits `routes.error`, this rewrites
@@ -379,12 +385,11 @@ describe("compound routes — error bubble propagation", () => {
             modes: { exploder },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
                 // No `routes.error` here → child END_ERROR re-throws.
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, {
             group: typeof group;
@@ -418,7 +423,6 @@ describe("compound routes — error bubble propagation", () => {
             },
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
                 error: { target: END },
             },
@@ -428,7 +432,6 @@ describe("compound routes — error bubble propagation", () => {
             modes: { exploder },
             routes: {
                 achieved: { target: "good" },
-                retry: [],
                 abandoned: { target: "bad" },
                 error: [
                     {
@@ -443,10 +446,10 @@ describe("compound routes — error bubble propagation", () => {
                 ],
             },
         });
-        const good = defineMode<Ctx, Events>({ on: {} });
-        const bad = defineMode<Ctx, Events>({ on: {} });
-        const typeLanded = defineMode<Ctx, Events>({ on: {} });
-        const otherLanded = defineMode<Ctx, Events>({ on: {} });
+        const good = sink<Ctx>("good");
+        const bad = sink<Ctx>("bad");
+        const typeLanded = sink<Ctx>("typeLanded");
+        const otherLanded = sink<Ctx>("otherLanded");
 
         const machine = defineAgent<Ctx, Events, {
             group: typeof group;
@@ -465,7 +468,7 @@ describe("compound routes — error bubble propagation", () => {
         const actor = createActor(machine).start();
         await settle();
         const snap = actor.getSnapshot();
-        expect(snap.value).toBe("typeLanded");
+        expect(modeOf(snap.value)).toBe("typeLanded");
         expect(snap.context.tag).toBe("type:typed-boom");
         actor.stop();
     });
@@ -480,7 +483,6 @@ describe("compound routes — error bubble propagation", () => {
             },
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
                 error: { target: END },
             },
@@ -490,12 +492,11 @@ describe("compound routes — error bubble propagation", () => {
             modes: { exploder },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
                 error: { target: RE_THROW },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, {
             group: typeof group;
@@ -519,29 +520,38 @@ describe("compound routes — error bubble propagation", () => {
     });
 });
 
-describe("compound routes — passive END defaults to `achieved`", () => {
-    test("a passive child's `on[event].target = END` lands in the compound's achieved bucket", () => {
+describe("compound routes — event-mode child END lands in the `achieved` bucket", () => {
+    test("an event-mode child whose achieved route targets END lands in the compound's achieved bucket", async () => {
         type Ctx = { picked: string };
 
-        // Passive child: no behavior, just an `on` map. spec 008 (and
-        // buildPassiveState) routes its END to the `achieved` bucket.
-        const waiting = defineMode<Ctx, Events>({
-            on: { GO: { target: END } },
+        // SPEC 011: the old passive child (`on: { GO: { target: END } }`) is now
+        // an event-mode — it parks on entry, runs its behavior on GO, and its
+        // achieved route targets END → the compound's `achieved` bucket. (The
+        // pre-011 "passive END defaults to achieved" rule is gone; an event-mode
+        // routes its outcome explicitly.)
+        const waiting = defineMode<Ctx, Events, undefined>({
+            start: "event",
+            events: ["GO"],
+            input: () => null,
+            behavior: async () => ({ outcome: "achieved", payload: undefined }),
+            routes: {
+                achieved: { target: END },
+                abandoned: { target: END },
+            },
         });
         const group = defineCompoundMode<Ctx, Events, undefined, { waiting: typeof waiting }>({
             initial: "waiting",
             modes: { waiting },
             routes: {
                 achieved: { target: "done", assign: () => ({ picked: "achieved" }) },
-                retry: [],
-                // If passive END were ever routed to abandoned, this would
-                // fire instead. The test fails (wrong sibling + wrong tag)
-                // if that regression appears.
+                // If the child's achieved END were ever routed to the abandoned
+                // bucket, this would fire instead. The test fails (wrong sibling
+                // + wrong tag) if that regression appears.
                 abandoned: { target: "fallback", assign: () => ({ picked: "abandoned" }) },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
-        const fallback = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
+        const fallback = sink<Ctx>("fallback");
 
         const machine = defineAgent<Ctx, Events, {
             group: typeof group;
@@ -557,8 +567,9 @@ describe("compound routes — passive END defaults to `achieved`", () => {
 
         const actor = createActor(machine).start();
         actor.send({ type: "GO" });
+        await settle(); // event-mode behavior is async (was a sync passive transition)
         const snap = actor.getSnapshot();
-        expect(snap.value).toBe("done");
+        expect(modeOf(snap.value)).toBe("done");
         expect(snap.context.picked).toBe("achieved");
         actor.stop();
     });

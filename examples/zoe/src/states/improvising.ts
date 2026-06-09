@@ -1,5 +1,5 @@
 import { defineMode } from "@eduardorenani/atlasjs";
-import type { ModeOutput } from "@eduardorenani/atlasjs";
+import type { ModeResult } from "@eduardorenani/atlasjs";
 
 import { chat } from "../llm-client.js";
 import type { Message, Tool } from "../llm-client.js";
@@ -29,7 +29,8 @@ export const improvising = defineMode<
     { messages: Message[] }
 >({
     input: ({ context }) => ({ messages: context.messages }),
-    behavior: async ({ input }): Promise<ModeOutput<{ messages: Message[] }>> => {
+    // SPEC 011: active mode entered by a transition — ignores `event`.
+    behavior: async ({ input }): Promise<ModeResult<{ messages: Message[] }>> => {
         const { messages } = input as { messages: Message[] };
         const replied = await chat(messages, SYSTEM_PROMPT, TOOLS);
         const last = replied[replied.length - 1];
@@ -45,7 +46,7 @@ export const improvising = defineMode<
                 messages: [...context.messages, ...payload.messages],
             }),
         },
-        retry: [],
+        // SPEC 011: no `retry` bucket — `routes` holds only exits.
         abandoned: { target: "classifying" },
         // On an LLM transport error, log and recover by handing back to the
         // classifier (spec 003 §`improvising`). As a root-level sibling the

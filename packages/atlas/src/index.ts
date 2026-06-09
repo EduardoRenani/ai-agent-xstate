@@ -11,22 +11,24 @@ export { defineAgent } from "./defineAgent.ts";
 export { startAgent } from "./startAgent.ts";
 export { END, RE_THROW } from "./types.ts";
 export type {
-    ModeOutput,
+    // SPEC 011: ModeResult/Stay/StayMap replace ModeOutput/EventHandlers.
+    ModeResult,
     Outcome,
+    Stay,
     Mode,
     CompoundMode,
     ModeConfig,
-    ActiveModeConfig,
-    PassiveModeConfig,
+    RunModeConfig,
+    EventModeConfig,
     CompoundModeConfig,
     AgentConfig,
     ModesMap,
     CompoundContext,
     Routes,
+    StayMap,
     RouteList,
     RouteTarget,
     ErrorRouteTarget,
-    EventHandlers,
     JsonPrimitive,
     JsonValue,
     JsonObject,

@@ -1,11 +1,24 @@
 // Phase 5.16 runtime tests: final emit — `compile()` composes every slice
-// (validators + walk + buildActors + buildActions + buildActiveState /
-// buildPassiveState with parent lift + per-level END injection) and hands
-// the result to `setup({...}).createMachine({...})`. `defineAgent` returns
-// that machine verbatim.
+// (validators + walk + buildActors + buildActions + buildActiveState with
+// parent lift + per-level END injection) and hands the result to
+// `setup({...}).createMachine({...})`. `defineAgent` returns that machine.
 //
 // Spec: docs/specs/004-tasks.md Phase 5.16 +
-// docs/specs/004-xstate-agent-wrapper.md §Mapping.
+// docs/specs/004-xstate-agent-wrapper.md §Mapping +
+// docs/specs/011-self-suspending-modes.md §Desugaring.
+//
+// SPEC 011 adaptations applied throughout (observable behaviour preserved):
+//   - `ModeOutput` → `ModeResult`; the `retry` route is gone.
+//   - There are no passive `{ on: { ... } }` leaves. An old passive transition
+//     (`on: { MESSAGE: { target, actions } }`) becomes an EVENT-MODE whose
+//     behavior runs on the event and whose `routes.achieved.assign` does what
+//     the named action did. A terminal `{ on: {} }` sink becomes an event-mode
+//     awaiting no events (parks forever).
+//   - Every leaf lowers to a mini-compound, so raw `snapshot.value` is nested
+//     (`{ done: "$wait" }`); `modeOf` reads the top-level mode name.
+//   - An event-mode runs an ASYNC behavior (vs. the old synchronous passive
+//     transition), so tests that send an event now `await settle()` before
+//     asserting — same observable result, just the model's real async timing.
 
 import { createActor } from "xstate";
 import { describe, expect, test } from "vitest";
@@ -14,36 +27,53 @@ import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
 import { defineCompoundMode } from "../src/defineCompoundMode.ts";
 import { END, RE_THROW } from "../src/types.ts";
-import type { ModeOutput } from "../src/types.ts";
+import type { ModeResult } from "../src/types.ts";
 
 type Ctx = { readonly messages: readonly string[]; readonly turns: number };
 type Events = { type: "MESSAGE"; text: string };
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-// `createActor(machine).start()` lets us inspect XState's runtime snapshot
-// (state value, context) — the simplest way to assert the machine compiled
-// to the right shape end-to-end.
 function startedActor(machine: ReturnType<typeof defineAgent>) {
     const actor = createActor(machine);
     actor.start();
     return actor;
 }
 
-// Drain microtasks so async `behavior` promises and the resulting `onDone`
-// transitions land before we read state.
+// Drain microtasks so async `behavior` promises and the resulting transitions
+// land before we read state. SPEC 011: every leaf runs an async behavior (no
+// synchronous passive transitions anymore), so a multi-hop chain — e.g.
+// listening → classifying → greetings.thinking → END → listening — needs more
+// microtask rounds than the pre-011 (partly synchronous) flow did.
 async function settle(): Promise<void> {
-    await new Promise<void>((r) => queueMicrotask(r));
-    await new Promise<void>((r) => queueMicrotask(r));
-    await new Promise<void>((r) => queueMicrotask(r));
+    for (let i = 0; i < 40; i += 1) {
+        await new Promise<void>((r) => queueMicrotask(r));
+    }
 }
+
+// SPEC 011: a leaf is a mini-compound, so `snapshot.value` is nested
+// (`{ done: "$wait" }`) rather than the flat `"done"` it was. Read the
+// top-level mode name. (Compiles to the same mode-level assertion as before.)
+const modeOf = (value: unknown): string =>
+    typeof value === "string" ? value : Object.keys(value as object)[0];
+
+// SPEC 011: terminal sink — an event-mode awaiting no events parks forever; its
+// `routes` (self-target) are unreachable scaffolding. Replaces the old `{ on: {} }`.
+const sink = <C>(self: string) =>
+    defineMode<C, Events>({
+        start: "event",
+        events: [],
+        input: () => null,
+        behavior: async () => ({ outcome: "achieved", payload: undefined }),
+        routes: { achieved: { target: self }, abandoned: { target: self } },
+    });
 
 describe("compile() — single active leaf agent", () => {
     test("compiles, starts, transitions via achieved payload route", async () => {
         const classifying = defineMode<Ctx, Events, { intent: "greeting" | "general" }>({
             input: ({ context }) => context.messages,
             behavior: async () =>
-                ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeOutput<{
+                ({ outcome: "achieved", payload: { intent: "greeting" } } satisfies ModeResult<{
                     intent: "greeting" | "general";
                 }>),
             routes: {
@@ -51,13 +81,10 @@ describe("compile() — single active leaf agent", () => {
                     { when: (p) => p.intent === "greeting", target: "done" },
                     { target: "done" },
                 ],
-                retry: [],
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({
-            on: {},
-        });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, { classifying: typeof classifying; done: typeof done }>({
             id: "agent",
@@ -69,40 +96,43 @@ describe("compile() — single active leaf agent", () => {
 
         const actor = startedActor(machine);
         await settle();
-        expect(actor.getSnapshot().value).toBe("done");
+        expect(modeOf(actor.getSnapshot().value)).toBe("done");
     });
 });
 
-describe("compile() — passive leaf agent", () => {
-    test("event triggers transition with action", () => {
-        const listening = defineMode<Ctx, Events>({
-            on: {
-                MESSAGE: {
+describe("compile() — event-mode leaf agent", () => {
+    test("event triggers the behavior, whose achieved route appends + transitions", async () => {
+        // SPEC 011: the old passive `on: { MESSAGE: { target: "echo", actions:
+        // "appendMessage" } }` becomes an event-mode — the behavior runs on
+        // MESSAGE and the achieved route's `assign` does the append.
+        const listening = defineMode<Ctx, Events, { text: string }>({
+            start: "event",
+            events: ["MESSAGE"],
+            input: ({ context }) => context.messages,
+            behavior: async ({ event }) => ({ outcome: "achieved", payload: { text: event.text } }),
+            routes: {
+                achieved: {
                     target: "echo",
-                    actions: "appendMessage",
+                    assign: ({ context, payload }) => ({ messages: [...context.messages, payload.text] }),
                 },
+                abandoned: { target: "echo" },
             },
         });
-        const echo = defineMode<Ctx, Events>({ on: {} });
+        const echo = sink<Ctx>("echo");
 
         const machine = defineAgent<Ctx, Events, { listening: typeof listening; echo: typeof echo }>({
             id: "agent",
             initial: "listening",
             context: { messages: [], turns: 0 },
             events: {} as Events,
-            actions: {
-                appendMessage: ({ context, event }) => {
-                    const e = event as { type: "MESSAGE"; text: string };
-                    return { messages: [...context.messages, e.text] };
-                },
-            },
             modes: { listening, echo },
         });
 
         const actor = startedActor(machine);
         actor.send({ type: "MESSAGE", text: "hello" });
+        await settle(); // event-mode behavior is async (was a sync passive transition)
         const snap = actor.getSnapshot();
-        expect(snap.value).toBe("echo");
+        expect(modeOf(snap.value)).toBe("echo");
         expect((snap.context as Ctx).messages).toEqual(["hello"]);
     });
 });
@@ -112,10 +142,9 @@ describe("compile() — compound with END exits", () => {
         const inner = defineMode<Ctx, Events>({
             input: ({ context }) => context.messages,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -124,11 +153,10 @@ describe("compile() — compound with END exits", () => {
             modes: { inner },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, { group: typeof group; done: typeof done }>({
             id: "agent",
@@ -140,27 +168,37 @@ describe("compile() — compound with END exits", () => {
 
         const actor = startedActor(machine);
         await settle();
-        expect(actor.getSnapshot().value).toBe("done");
+        expect(modeOf(actor.getSnapshot().value)).toBe("done");
     });
 });
 
 describe("compile() — END-free compound (5.12)", () => {
     test("no `$end` substate is injected when no child targets END", () => {
-        const a = defineMode<Ctx, Events>({
-            on: { MESSAGE: { target: "b" } },
+        // SPEC 011: `a` is an event-mode (was passive `on: { MESSAGE → b }`); it
+        // parks in `$wait` on entry. No child targets END, so `compile.ts`
+        // injects no compound-level `$end` for `group` — the active value never
+        // contains `$end` (the leaves' own inactive `$end_*` finals don't show).
+        const a = defineMode<Ctx, Events, undefined>({
+            start: "event",
+            events: ["MESSAGE"],
+            input: ({ context }) => context.messages,
+            behavior: async () => ({ outcome: "achieved", payload: undefined }),
+            routes: {
+                achieved: { target: "b" },
+                abandoned: { target: "b" },
+            },
         });
-        const b = defineMode<Ctx, Events>({ on: {} });
+        const b = sink<Ctx>("b");
         const group = defineCompoundMode<Ctx, Events, undefined, { a: typeof a; b: typeof b }>({
             initial: "a",
             modes: { a, b },
             // Not reachable; the compound never finalises. Required for shape.
             routes: {
                 achieved: { target: "other" },
-                retry: [],
                 abandoned: { target: "other" },
             },
         });
-        const other = defineMode<Ctx, Events>({ on: {} });
+        const other = sink<Ctx>("other");
 
         const machine = defineAgent<Ctx, Events, { group: typeof group; other: typeof other }>({
             id: "agent",
@@ -170,8 +208,6 @@ describe("compile() — END-free compound (5.12)", () => {
             modes: { group, other },
         });
 
-        // `getInitialSnapshot`'s value carries the nested-compound state name;
-        // it must NOT contain `$end` anywhere.
         const snap = createActor(machine).start().getSnapshot();
         expect(JSON.stringify(snap.value)).not.toContain("$end");
     });
@@ -187,11 +223,10 @@ describe("compile() — compound with local context", () => {
             behavior: async ({ input }) => {
                 const i = input as { a: number; m: number };
                 if (i.a < 0 || i.m < 0) throw new Error("bad");
-                return { outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>;
+                return { outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>;
             },
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -207,11 +242,10 @@ describe("compile() — compound with local context", () => {
             modes: { inner },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<CtxLocal, Events>({ on: {} });
+        const done = sink<CtxLocal>("done");
 
         const machine = defineAgent<CtxLocal, Events, { group: typeof group; done: typeof done }>({
             id: "agent",
@@ -222,8 +256,8 @@ describe("compile() — compound with local context", () => {
         });
 
         const actor = startedActor(machine);
-        // Once entered, the compound's `entry` action allocates the local
-        // slot in the root context — assert by reading the context.
+        // Once entered, the compound's `entry` action allocates the local slot
+        // in the root context — assert by reading the context.
         const slotKey = "__group_local";
         const snapAfterEntry = actor.getSnapshot();
         expect(
@@ -231,10 +265,10 @@ describe("compile() — compound with local context", () => {
         ).toEqual({ attempts: 0 });
 
         await settle();
-        // After inner achieves END → compound's onDone → "done". exit action
+        // After inner achieves END → compound's onDone → "done". The exit action
         // cleared the local slot back to undefined.
         const final = actor.getSnapshot();
-        expect(final.value).toBe("done");
+        expect(modeOf(final.value)).toBe("done");
         expect(
             (final.context as Record<string, unknown>)[slotKey],
         ).toBeUndefined();
@@ -250,7 +284,6 @@ describe("compile() — RE_THROW error route", () => {
             },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
                 error: [
                     { when: (e) => e instanceof TypeError, target: RE_THROW },
@@ -258,7 +291,7 @@ describe("compile() — RE_THROW error route", () => {
                 ],
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, { failing: typeof failing; done: typeof done }>({
             id: "agent",
@@ -285,10 +318,9 @@ describe("compile() — validator integration (fail-fast)", () => {
         const bad = defineMode<Ctx, Events>({
             input: ({ context }) => context.messages,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: "nonexistent" },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -304,7 +336,7 @@ describe("compile() — validator integration (fail-fast)", () => {
         ).toThrow(/no such sibling/);
     });
 
-    test("validateRoutes fires on machine creation for `[]` on a non-retry slot", () => {
+    test("validateRoutes fires on machine creation for `[]` on a required slot", () => {
         const carrier = {
             __kind: "leaf" as const,
             config: {
@@ -312,7 +344,6 @@ describe("compile() — validator integration (fail-fast)", () => {
                 behavior: async () => ({ outcome: "achieved" as const, payload: undefined }),
                 routes: {
                     achieved: [] as unknown[], // bypass the type system
-                    retry: [] as unknown[],
                     abandoned: { target: END },
                 },
             },
@@ -337,10 +368,9 @@ describe("compile() — actor naming (DD-008 as invariant)", () => {
         const evaluating = defineMode<Ctx, Events>({
             input: ({ context }) => context.messages,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -349,11 +379,10 @@ describe("compile() — actor naming (DD-008 as invariant)", () => {
             modes: { evaluating },
             routes: {
                 achieved: { target: "done" },
-                retry: [],
                 abandoned: { target: "done" },
             },
         });
-        const done = defineMode<Ctx, Events>({ on: {} });
+        const done = sink<Ctx>("done");
 
         const machine = defineAgent<Ctx, Events, { socratic: typeof socratic; done: typeof done }>({
             id: "agent",
@@ -378,8 +407,20 @@ describe("compile() — full smoke (representative machine)", () => {
     test("compiles a small but representative tree end-to-end", async () => {
         type SmokeCtx = { messages: readonly string[] };
 
-        const listening = defineMode<SmokeCtx, Events>({
-            on: { MESSAGE: { target: "classifying", actions: "appendMessage" } },
+        // SPEC 011: was passive `on: { MESSAGE: { target: "classifying", actions:
+        // "appendMessage" } }`; now an event-mode whose achieved route appends.
+        const listening = defineMode<SmokeCtx, Events, { text: string }>({
+            start: "event",
+            events: ["MESSAGE"],
+            input: ({ context }) => context.messages,
+            behavior: async ({ event }) => ({ outcome: "achieved", payload: { text: event.text } }),
+            routes: {
+                achieved: {
+                    target: "classifying",
+                    assign: ({ context, payload }) => ({ messages: [...context.messages, payload.text] }),
+                },
+                abandoned: { target: "classifying" },
+            },
         });
 
         const classifying = defineMode<SmokeCtx, Events, { intent: "greet" | "other" }>({
@@ -390,14 +431,13 @@ describe("compile() — full smoke (representative machine)", () => {
                 return {
                     outcome: "achieved",
                     payload: { intent: last === "hi" ? "greet" : "other" },
-                } satisfies ModeOutput<{ intent: "greet" | "other" }>;
+                } satisfies ModeResult<{ intent: "greet" | "other" }>;
             },
             routes: {
                 achieved: [
                     { when: (p) => p.intent === "greet", target: "greetings" },
                     { target: "listening" },
                 ],
-                retry: [],
                 abandoned: { target: "listening" },
             },
         });
@@ -405,10 +445,9 @@ describe("compile() — full smoke (representative machine)", () => {
         const greetingsThinking = defineMode<SmokeCtx, Events, undefined>({
             input: ({ context }) => context.messages,
             behavior: async () =>
-                ({ outcome: "achieved", payload: undefined } satisfies ModeOutput<undefined>),
+                ({ outcome: "achieved", payload: undefined } satisfies ModeResult<undefined>),
             routes: {
                 achieved: { target: END },
-                retry: [],
                 abandoned: { target: END },
             },
         });
@@ -422,7 +461,6 @@ describe("compile() — full smoke (representative machine)", () => {
             modes: { thinking: greetingsThinking },
             routes: {
                 achieved: { target: "listening" },
-                retry: [],
                 abandoned: { target: "listening" },
             },
         });
@@ -436,22 +474,16 @@ describe("compile() — full smoke (representative machine)", () => {
             initial: "listening",
             context: { messages: [] },
             events: {} as Events,
-            actions: {
-                appendMessage: ({ context, event }) => {
-                    const e = event as { type: "MESSAGE"; text: string };
-                    return { messages: [...context.messages, e.text] };
-                },
-            },
             modes: { listening, classifying, greetings },
         });
 
         const actor = startedActor(machine);
-        expect(actor.getSnapshot().value).toBe("listening");
+        expect(modeOf(actor.getSnapshot().value)).toBe("listening");
 
         actor.send({ type: "MESSAGE", text: "hi" });
         await settle();
         // greet → enters `greetings` → thinking resolves → END → greetings.onDone → "listening"
-        expect(actor.getSnapshot().value).toBe("listening");
+        expect(modeOf(actor.getSnapshot().value)).toBe("listening");
         expect((actor.getSnapshot().context as SmokeCtx).messages).toEqual(["hi"]);
     });
 });

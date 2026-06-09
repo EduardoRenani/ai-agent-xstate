@@ -1,31 +1,27 @@
-// `defineMode` — constructs a leaf agent Mode (active or passive variant).
+// `defineMode` — constructs a unified leaf agent Mode.
 //
-// Spec: docs/specs/004-xstate-agent-wrapper.md §`defineMode`
+// Spec: docs/specs/011-self-suspending-modes.md §The model / §Surface
+//        (supersedes the active/passive split from spec 004 §`defineMode`).
 //        + docs/specs/005-agent-deps-and-stringifiable-context.md §`defineMode`
-//        + docs/specs/006-modes-not-states.md §"Refined vocabulary"
 //
-// Phase 3 (these constructors) is a thin shell: it stores the user's config
-// plus a runtime `__kind` tag behind the opaque `Mode` brand. The actual
-// XState lowering happens in `compile.ts` (Phase 5) and is reached only via
-// `defineAgent`. Users never inspect the returned object.
-//
-// The `TDeps` generic flows through to the brand via `__phantomDeps`, which
-// puts it in function-argument position — making `Mode` contravariant in
-// `TDeps`. That gives the slot-time variance check in `defineAgent.modes`
-// the right direction structurally: a `Mode` demanding `{ db }` slots into
-// agents whose deps include at least `db`.
+// SPEC 011: there is no longer an active vs passive *type* split. Every mode has
+// a `behavior`; `start` is a single activation bit. `defineMode` is overloaded
+// so the behavior's `event` narrows by start — `start: "event"` sees `TEvents`,
+// `start: "run"` sees `TEvents | undefined`. Phase 3 stays a thin shell: store
+// the config plus the `__kind: "leaf"` tag behind the opaque `Mode` brand;
+// `compile.ts` lowers.
 
-import type { Mode, ModeConfig } from "./types.ts";
+import type {
+    EventModeConfig,
+    Mode,
+    ModeConfig,
+    RunModeConfig,
+} from "./types.ts";
 
 /**
- * Runtime carrier behind the opaque `Mode` brand. Internal — accessed
- * only by `compile.ts` via the `__kind` discriminant. User code never sees
- * this shape because `defineMode` returns the branded type.
- *
- * @template TContext  Context shape this Mode reads/writes.
- * @template TEvents   The agent's full event union (each variant has a `type`).
- * @template TPayload  Payload shape carried by `ModeOutput<TPayload>`.
- * @template TDeps     Frozen deps container this Mode demands.
+ * Runtime carrier behind the opaque `Mode` brand. Internal — accessed only by
+ * `compile.ts` via the `__kind` discriminant. The unified `ModeConfig` keeps
+ * `start` so the lowering can tell a run-mode from an event-mode.
  */
 export type ModeCarrier<
     TContext,
@@ -38,73 +34,65 @@ export type ModeCarrier<
 };
 
 /**
- * Construct a **leaf Mode** — one node in the agent's state tree with no
- * sub-Modes. Modes come in two structural flavors:
+ * Construct a **leaf Mode** (SPEC 011 — one unified primitive).
  *
- * - **Active** (`{ input, behavior, routes }`) — runs an async `behavior` and
- *   dispatches on its `ModeOutput`. Use for LLM calls, tool execution,
- *   classifiers — anything that does work and then decides where to go next.
+ * A mode always has a `behavior`. Two things shape it:
  *
- * - **Passive** (`{ on }`) — waits for an external event. Use for listening
- *   states or user-input gates.
+ * - **`start`** — *how the mode is activated*. `"run"` (default) enters by
+ *   running the behavior immediately (no event yet, `event: undefined`).
+ *   `"event"` enters parked; the behavior runs only when a declared event
+ *   arrives (`event: TEvents`).
+ * - **the behavior's return** — `{ outcome: "achieved" | "abandoned" }` to
+ *   LEAVE (dispatched by `routes`, each carries a `target`), or
+ *   `{ stay: "replay" | "waitOnEvent" }` to STAY and re-run (dispatched by
+ *   `stay`, no target). `replay` re-runs now; `waitOnEvent` re-runs on the
+ *   next declared event.
  *
- * The two variants are mutually exclusive at the type level: mixing `behavior`
- * and `on` is a compile error.
- *
- * @template TContext  Shape of the context this Mode observes. Constrained to
- *                     `JsonCompatible<TContext>`. At the agent's top level,
- *                     this is the agent's full context. Inside a
- *                     `defineCompoundMode` with a narrowing `context`, this is
- *                     the compound-local view: inherited keys + declared locals.
- * @template TEvents   The agent's full event union. Each variant must have a
- *                     `type: string` discriminant. Passive `on` handlers are
- *                     typed against this union via `Extract<TEvents, { type: K }>`.
- * @template TPayload  Payload type carried on a successful `behavior` return
- *                     (`ModeOutput<TPayload>`). Flows into `routes.*.when` and
- *                     `routes.*.assign` for payload-driven dispatch. Defaults
- *                     to `unknown` (relevant only for passive Modes, which
- *                     never produce a payload).
- * @template TDeps     Frozen deps this Mode wants to see. Defaults to
- *                     `Record<string, never>` — a Mode with the default
- *                     slots into any agent. A Mode that declares
- *                     `<…, { db: Driver }>` can only slot into agents whose
- *                     `defineAgent.deps` provides at least `db`.
- *
- * @param config  An `ActiveModeConfig` or a `PassiveModeConfig`. The
- *                discriminator is structural — TypeScript picks the variant
- *                from which keys are present.
- *
- * @returns An opaque `Mode` brand. User code cannot inspect it; only
- *          `defineCompoundMode` and `defineAgent` accept it as a `modes` slot.
- *
- * @example Active Mode — classify an intent and route on the payload.
+ * @example Run mode (default) — collapse a teach/listen/evaluate loop into one.
  * ```ts
- * const classifying = defineMode<Ctx, Ev, { intent: "greet" | "learn" }>({
- *     input: ({ context, deps }) => ({ messages: context.messages }),
- *     behavior: async ({ input, deps }) => {
- *         const intent = await deps.llm.classify(input);
- *         return { outcome: "achieved", payload: { intent } };
+ * const socratic = defineMode<Ctx, Ev, Pay, Deps>({
+ *     input: ({ context }) => ({ messages: context.messages }),
+ *     events: ["MESSAGE"],
+ *     behavior: async ({ input, event, deps }) => {
+ *         if (event?.type === "MESSAGE") { ... return { outcome: "achieved", payload }; }
+ *         await deps.teach(...);
+ *         return { stay: "waitOnEvent", payload };
  *     },
- *     routes: {
- *         achieved: [
- *             { when: (p) => p.intent === "greet", target: "greetings" },
- *             { target: "socratic" },
- *         ],
- *         retry: [],
- *         abandoned: { target: END },
- *     },
+ *     routes: { achieved: { target: END }, abandoned: { target: END } },
+ *     stay: { waitOnEvent: {} },
  * });
  * ```
  *
- * @example Passive Mode — park here until a `USER_MSG` event arrives.
+ * @example Event mode — park until a MESSAGE, then process it (no guard).
  * ```ts
- * const listening = defineMode<Ctx, Ev>({
- *     on: {
- *         USER_MSG: { target: "classifying", actions: "appendUserMsg" },
- *     },
+ * const idle = defineMode<Ctx, Ev, Pay, Deps>({
+ *     start: "event",
+ *     events: ["MESSAGE"],
+ *     input: ({ context }) => ({ messages: context.messages }),
+ *     behavior: async ({ event }) => ({ outcome: "achieved", payload: { text: event.text } }),
+ *     routes: { achieved: { target: "next" }, abandoned: { target: END } },
  * });
  * ```
  */
+// Event overload first: its required `start: "event"` is the more specific
+// match, so a `{ start: "event", ... }` config resolves here (event: TEvents).
+export function defineMode<
+    TContext,
+    TEvents extends { type: string },
+    TPayload = unknown,
+    TDeps extends Record<string, unknown> = Record<string, never>,
+>(
+    config: EventModeConfig<TContext, TEvents, TPayload, TDeps>,
+): Mode<TContext, TEvents, TPayload, TDeps>;
+// Run overload (default): `start` omitted or "run" (event: TEvents | undefined).
+export function defineMode<
+    TContext,
+    TEvents extends { type: string },
+    TPayload = unknown,
+    TDeps extends Record<string, unknown> = Record<string, never>,
+>(
+    config: RunModeConfig<TContext, TEvents, TPayload, TDeps>,
+): Mode<TContext, TEvents, TPayload, TDeps>;
 export function defineMode<
     TContext,
     TEvents extends { type: string },
@@ -117,8 +105,7 @@ export function defineMode<
         __kind: "leaf",
         config,
     };
-    // The brand is a phantom — at runtime the object is just the carrier.
-    // The cast is the single boundary where the opaque type is minted; user
-    // code can only obtain `Mode` values through this function.
+    // The brand is a phantom — at runtime the object is just the carrier. This
+    // cast is the single boundary where the opaque type is minted.
     return carrier as unknown as Mode<TContext, TEvents, TPayload, TDeps>;
 }

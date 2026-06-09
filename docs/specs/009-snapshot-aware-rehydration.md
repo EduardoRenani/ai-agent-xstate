@@ -133,9 +133,10 @@ breaking the callback signature.
 export type AgentInspectionEvent<TContext> =
     | {
         type: "transition";
-        from: string;       // mode-path before, e.g. "socratic.teaching"
-        to: string;         // mode-path after,  e.g. "socratic.evaluating"
-        context: TContext;  // root context AFTER the transition
+        from: string;                  // mode-path before, e.g. "socratic.teaching"
+        to: string;                    // mode-path after,  e.g. "socratic.evaluating"
+        context: TContext;             // root context AFTER the transition
+        awaiting?: readonly string[];  // SPEC 011 #6: event types resuming a parked mode
     };
 ```
 
@@ -143,6 +144,19 @@ export type AgentInspectionEvent<TContext> =
 computed by a wrapper-internal `formatModePath` that walks the nested XState
 `snapshot.value` once and returns a stable string. The host no longer touches
 XState's nested value shape.
+
+`awaiting` (added by SPEC 011 Clarification #6) is the **readiness** signal.
+SPEC 011 lowers every self-suspending mode to a mini-compound whose synthetic
+substates (`$run`/`$wait`) are masked out of `from`/`to`, so the path alone can
+no longer tell "parked" from "running". `awaiting` restores that distinction
+explicitly: it is present and **non-empty** ONLY when the agent is parked in a
+mode's `$wait` substate, listing the event types that will resume it; it is
+absent/`undefined` while the agent is running (`$run`). It is typed as
+`readonly string[]` rather than the agent's `TEvents["type"]` union because
+`AgentInspectionEvent` is not threaded with `TEvents`. Internally the wrapper
+recovers it from `snapshot.getMeta()` — `buildWaitState` stamps the waited-on
+events onto the `$wait` state's `meta.atlasAwaiting` (XState v5 snapshots do not
+expose `nextEvents`, so `meta` is the robust carrier).
 
 ## Persistence Contract
 

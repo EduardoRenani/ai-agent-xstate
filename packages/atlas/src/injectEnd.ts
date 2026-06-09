@@ -33,13 +33,28 @@ import {
     type LiftContext,
     buildSubContext,
 } from "./contextLift.ts";
-import type { LoweredAtomicState, LoweredTransition } from "./buildPassiveState.ts";
 import type {
     LoweredInvokeState,
     LoweredOnDoneTransition,
     LoweredOnErrorTransition,
     LoweredReThrowAction,
 } from "./buildActiveState.ts";
+import type { RouteTarget } from "./types.ts";
+
+// SPEC 011 §Desugaring: leaf modes now lower to mini-compounds, so the
+// `$run`/`$wait`/`$end_*` substates are emitted (and their END buckets
+// resolved) inside `buildActiveState`. These atomic-state shapes survive only
+// because `injectEnd`'s level-walk still type-handles the *leaf* node case for
+// completeness; at runtime every top-level node is a compound or a final.
+export type LoweredTransition = {
+    target?: RouteTarget | EndBucketSymbol | string;
+    actions?: string | readonly string[];
+    guard?: (args: { context: unknown; event: unknown }) => boolean;
+};
+
+export type LoweredAtomicState = {
+    on: Record<string, LoweredTransition | readonly LoweredTransition[]>;
+};
 
 export type LoweredLeafState = LoweredAtomicState | LoweredInvokeState;
 
@@ -97,8 +112,19 @@ function makeNonErrorOutput(
 // bucket (errors are not user-shaped payloads).
 function makeErrorOutput(): FinalOutputFn {
     return ({ event }) => {
-        const e = event as { error?: unknown };
-        return { outcome: "error", payload: e.error };
+        // The error final is entered from two event shapes:
+        //   - directly from a leaf's `$run.invoke.onError` → `event.error` (the
+        //     raw rejection), OR
+        //   - SPEC 011: bubbled up from a child (mini-)compound's own error
+        //     final, where the child already forwarded the raw error as
+        //     `event.output.payload`. Since every leaf is now a mini-compound,
+        //     a leaf's error reaches its ENCLOSING compound via this second
+        //     shape — reading only `event.error` here would drop it (the
+        //     enclosing `routes.error.when`/`assign` must still see the raw
+        //     error, spec 008 §Verification 5).
+        const e = event as { error?: unknown; output?: { payload?: unknown } };
+        const error = "error" in e ? e.error : e.output?.payload;
+        return { outcome: "error", payload: error };
     };
 }
 
@@ -112,6 +138,25 @@ export function makeFinalSubstate(
         outcome === "error"
             ? makeErrorOutput()
             : makeNonErrorOutput(outcome, outputCb, lift, deps);
+    return { type: "final" as const, output };
+}
+
+// SPEC 011 §Desugaring: a leaf mode's `$end_<bucket>` final FORWARDS the
+// behavior's payload (rather than running a compound `output?` callback) so the
+// mode's own `foo.onDone` can dispatch/assign on it. The achieved/abandoned
+// finals are entered from `$run.invoke.onDone`, where the behavior's
+// `ModeResult` lives in `event.output.payload`; the error final is entered from
+// `$run.invoke.onError`, where the raw error lives in `event.error`.
+function makeLeafForwardOutput(outcome: "achieved" | "abandoned"): FinalOutputFn {
+    return ({ event }) => {
+        const out = (event as { output?: { payload?: unknown } }).output;
+        return { outcome, payload: out === undefined ? undefined : out.payload };
+    };
+}
+
+export function makeLeafExitFinalSubstate(outcome: EndBucket): LoweredFinalState {
+    const output =
+        outcome === "error" ? makeErrorOutput() : makeLeafForwardOutput(outcome);
     return { type: "final" as const, output };
 }
 

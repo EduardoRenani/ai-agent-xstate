@@ -57,7 +57,13 @@ export async function runTurn(
         snapshot,
         inspect: (e) => {
             console.log(`[transition] ${e.from} → ${e.to}`);
-            if (e.to === "listening" && resolveReady !== null) {
+            // SPEC 011 Clarification #6: readiness is "the agent has parked
+            // waiting for input", surfaced as a non-empty `awaiting` (the event
+            // types that will resume it) — not a path match. The synthetic
+            // `$wait` substate is masked from `e.to`, so we read readiness from
+            // `awaiting` instead of checking `e.to === "listening"` / `.$wait`.
+            const parked = e.awaiting !== undefined && e.awaiting.length > 0;
+            if (parked && resolveReady !== null) {
                 const r = resolveReady;
                 resolveReady = null;
                 r();

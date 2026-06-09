@@ -38,5 +38,16 @@ export function formatModePath(value: unknown): string {
     }
     const entry = entries[0];
     if (entry === undefined) return "";
-    return `${entry[0]}.${formatModePath(entry[1])}`;
+    // SPEC 011 Clarification #6: a self-suspending mode lowers to a mini-compound
+    // with synthetic substates (`$run`/`$wait`/`$end_*`). MASK those synthetic
+    // segments to just the mode name — a parked mode reports `foo`, not
+    // `foo.$wait`; a running one `foo`, not `foo.$run`. Readiness ("parked vs
+    // running") is surfaced explicitly via `AgentInspectionEvent.awaiting`
+    // instead of being inferred from the path. Real nested compounds (children
+    // whose names don't start with `$`) recurse unchanged.
+    const child = entry[1];
+    if (typeof child === "string" && child.startsWith("$")) {
+        return entry[0];
+    }
+    return `${entry[0]}.${formatModePath(child)}`;
 }

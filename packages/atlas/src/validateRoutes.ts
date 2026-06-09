@@ -27,7 +27,9 @@
 // Like 5.14, this slice ships the validator standalone. Slice 5.16 wires
 // it into `defineAgent(...)` so the throw fires on machine creation.
 
-type RouteSlot = "achieved" | "retry" | "abandoned" | "error";
+// SPEC 011: `routes` holds only exits now — no `retry`. Continuations live in
+// `stay` (StayEntry = assign only, not a RouteList), so they are not shape-checked here.
+type RouteSlot = "achieved" | "abandoned" | "error";
 
 type LeafCarrier = {
     readonly __kind: "leaf";
@@ -77,7 +79,7 @@ function validateRouteListShape(
             leafPath,
             slot,
             null,
-            `required outcome is missing (declare an entry with \`target\` or, for retry, supply \`[]\`)`,
+            `required exit is missing (declare an entry with a \`target\`)`,
         );
     }
     if (!Array.isArray(value)) {
@@ -97,7 +99,6 @@ function validateRouteListShape(
 
     const arr = value as readonly { when?: unknown }[];
     if (arr.length === 0) {
-        if (slot === "retry") return; // explicit empty retry = no-op default
         fail(
             leafPath,
             slot,
@@ -134,21 +135,21 @@ function validateRouteListShape(
     }
 }
 
-function validateActiveLeafRoutes(
+// SPEC 011: every leaf has a `behavior` and a `routes` (achieved/abandoned/error);
+// `stay` (replay/waitOnEvent) is not a RouteList, so it is not shape-checked here.
+function validateLeafRoutes(
     config: Record<string, unknown>,
     leafPath: string,
 ): void {
     const routes = (config.routes ?? {}) as Record<string, unknown>;
     validateRouteListShape("achieved", routes.achieved, leafPath);
-    validateRouteListShape("retry", routes.retry, leafPath);
     validateRouteListShape("abandoned", routes.abandoned, leafPath);
     validateRouteListShape("error", routes.error, leafPath);
 }
 
-// Compound routes (spec 008): same shape rules as a leaf, with one extra
-// constraint — `retry` MUST be `readonly []` (compounds never bubble retry;
-// the bucket exists for symmetry only). `achieved` and `abandoned` are
-// required; `error` is optional (omitting it re-throws above the compound).
+// Compound routes (spec 008, SPEC 011): same shape rules as a leaf. `achieved`
+// and `abandoned` are required; `error` is optional (omitting it re-throws
+// above the compound). SPEC 011 removed `retry` — compounds have no behavior.
 function validateCompoundRoutes(
     config: { readonly routes?: unknown },
     compoundPath: string,
@@ -157,33 +158,11 @@ function validateCompoundRoutes(
     validateRouteListShape("achieved", routes.achieved, compoundPath);
     validateRouteListShape("abandoned", routes.abandoned, compoundPath);
     validateRouteListShape("error", routes.error, compoundPath);
-    // `retry` MUST be present AND MUST be the empty array. Non-empty arrays
-    // and missing slots are both wrapper-internal misuse — the type alias
-    // (`retry: readonly []`) already enforces this; the runtime check
-    // catches `as`-bypasses.
-    if (routes.retry === undefined) {
-        fail(
-            compoundPath,
-            "retry",
-            null,
-            `compound \`retry\` is required and must be the empty array \`[]\` ` +
-                `(compounds never bubble retry; the bucket exists for shape symmetry)`,
-        );
-    }
-    if (!Array.isArray(routes.retry) || routes.retry.length !== 0) {
-        fail(
-            compoundPath,
-            "retry",
-            null,
-            `compound \`retry\` must be the empty array \`[]\` (got ${
-                Array.isArray(routes.retry) ? `array of length ${routes.retry.length}` : typeof routes.retry
-            })`,
-        );
-    }
 }
 
-// Public entry point. Recursively validates `routes` shape on every active
-// leaf AND every compound. Passive leaves are skipped (no `routes` field).
+// Public entry point. Recursively validates `routes` shape on every leaf AND
+// every compound. SPEC 011: every leaf has `routes` now (no passive `on`-only
+// leaves to skip).
 export function validateRoutes(
     modes: Record<string, unknown>,
     parentPath: string = "",
@@ -192,9 +171,7 @@ export function validateRoutes(
         const path = joinPath(parentPath, name);
         const carrier = asCarrier(value, path);
         if (carrier.__kind === "leaf") {
-            if ("behavior" in carrier.config && carrier.config.behavior !== undefined) {
-                validateActiveLeafRoutes(carrier.config, path);
-            }
+            validateLeafRoutes(carrier.config, path);
         } else {
             validateCompoundRoutes(carrier.config, path);
             validateRoutes(carrier.config.modes, path);
