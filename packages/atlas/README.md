@@ -22,10 +22,10 @@ Because a behavior can `stay: "replay"` (re-run now) or `stay: "waitOnEvent"` (r
 ## Install
 
 ```bash
-npm install @eduardorenani/atlasjs@alpha xstate
+npm install @eduardorenani/atlasjs@alpha
 ```
 
-`xstate@^5` is a peer dependency — install it explicitly. Node 20+ required, ESM only.
+Node 20+ required, ESM only.
 
 ## 30-second tour
 

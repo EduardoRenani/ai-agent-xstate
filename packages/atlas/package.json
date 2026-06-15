@@ -1,7 +1,7 @@
 {
     "name": "@eduardorenani/atlasjs",
     "version": "0.1.0-alpha.6",
-    "description": "Mode-based agent orchestration on top of XState v5. Typed modes, four-outcome contract, goal-bound exits.",
+    "description": "Mode-based agent orchestration. Typed modes, four-outcome contract, goal-bound exits.",
     "type": "module",
     "main": "./dist/index.js",
     "types": "./dist/index.d.ts",
@@ -25,16 +25,14 @@
         "test:types": "vitest --typecheck --run --passWithNoTests",
         "prepublishOnly": "npm run clean && npm run build"
     },
-    "peerDependencies": {
-        "xstate": "^5"
+    "dependencies": {
+        "xstate": "~5.31"
     },
     "devDependencies": {
         "typescript": "^5.7",
-        "vitest": "^3",
-        "xstate": "^5"
+        "vitest": "^3"
     },
     "keywords": [
-        "xstate",
         "state-machine",
         "agent",
         "ai-agent",
