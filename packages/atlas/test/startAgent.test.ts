@@ -164,8 +164,8 @@ describe("startAgent() snapshot round-trip", () => {
         const snap = actor.getSnapshot();
         actor.stop();
         // Coarse tag, decoupled from package version — bumped only when
-        // the snapshot shape itself changes.
-        expect(snap.atlasVersion).toBe("1");
+        // the snapshot shape itself changes. SPEC 012 §Seam 2: now "2".
+        expect(snap.atlasVersion).toBe("2");
     });
 
     test("snapshot from a fresh actor is non-empty (persists `idle` initial)", () => {
@@ -360,7 +360,7 @@ describe("startAgent() onError channel", () => {
         if (info === undefined) throw new Error("unreachable");
         expect(info.error).toBe(BOOM);
         expect(info.modePath).toBe("failing");
-        expect(info.snapshot.atlasVersion).toBe("1");
+        expect(info.snapshot.atlasVersion).toBe("2");
     });
 
     test("recover (intra-machine): onError does NOT fire", async () => {
@@ -440,7 +440,9 @@ describe("startAgent() onError channel", () => {
         // We assert on the persisted shape directly because re-booting an
         // actor in error status surfaces XState lifecycle quirks
         // orthogonal to this contract.
-        const persisted = captured.snapshot.persisted as { value: unknown };
+        // SPEC 012 §Seam 2: the persisted payload is Atlas-owned `{ value,
+        // context }`, so `value` is read directly off it.
+        const persisted = captured.snapshot.persisted as unknown as { value: unknown };
         expect(formatModePath(persisted.value)).toBe("failing");
     });
 

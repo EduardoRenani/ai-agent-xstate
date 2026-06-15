@@ -177,12 +177,16 @@ type PersistedAgentSnapshotV2 = {
   `getPersistedSnapshot()` instead of storing the whole blob (which also
   carries `children`/`status` internals Atlas neither needs nor wants to own).
 - **Restore**: `startAgent` synthesizes the carrier snapshot the engine needs
-  from the v2 payload. The restore semantics are unchanged: entry actions do
-  not re-run; behaviors of `$run`-active modes restart (spec 009 contract).
+  from the v2 payload (`{ status: "active", value, context, children: {} }` —
+  the minimal shape XState v5's `restoreSnapshot` accepts). Entry actions do
+  not re-run, so compound locals survive (spec 009 contract). Persistence is
+  the turn-based parked case (spec 009: one event per turn → persist while
+  parked in `$wait`, where the carrier holds no children); a snapshot captured
+  mid-`$run` is out of scope — see Clarification C9.
 - **Versioning**: `atlasVersion` moves from dead stamp to real dispatch key.
   Version `"1"` payloads → mismatch path (see Clarification C2).
-- `AgentSnapshot.persisted` stays typed opaque to consumers (Clarification C5
-  decides `unknown` vs a branded alias).
+- `AgentSnapshot.persisted` is typed `PersistedAgentSnapshot` — an exported
+  opaque brand (Clarification C5); consumers store it without seeing inside.
 
 ### Seam 3 — Atlas IR + `xstateBackend`
 
@@ -328,3 +332,19 @@ Phase 4 is the largest and lands last so the contract tests and the suite
 - **C8 (settled) — Inspection/`awaiting`/`onError` surfaces.** Unchanged by
   this spec; `meta.atlasAwaiting` becomes a shared named constant and an
   `xstateBackend` concern, with identical observable output.
+- **C9 (settled 2026-06-15) — Restore of a mid-`$run` snapshot.** Out of scope.
+  The v2 payload is `{ value, context }` only; on restore Atlas synthesizes a
+  carrier snapshot with `children: {}`. Verified against `xstate@5.31.1`: for
+  the parked (`$wait`) case — the turn-based persistence contract (spec 009:
+  one event per turn, persist between turns) — the carrier holds no children,
+  so v2 restore is **bit-identical** to the old v1 full-blob restore. The two
+  diverge **only** if a host persists while a `$run` behavior is mid-flight:
+  v1's blob restarts the invoke, v2's empty children does not (the behavior
+  would not resume). This contradicts the draft's earlier "behaviors of
+  `$run`-active modes restart" wording, now corrected. Reconstructing active
+  invokes on restore would require carrier-specific child-id synthesis in
+  `startAgent` — fragile and properly an `xstateBackend` concern (DD-033) —
+  and buys nothing for the documented turn-based model. Spec 009 already lists
+  "Invoked child actors: No" and "Pending events queued mid-turn: No" as
+  non-surviving, so this is consistent, not a regression of any stated
+  guarantee.

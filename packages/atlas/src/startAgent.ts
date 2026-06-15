@@ -4,6 +4,8 @@
 //        §`startAgent` + §Persistence Contract + §Mapping
 //       docs/specs/010-error-channel.md
 //        §Public API Changes + §Behavior Contract + §Mapping
+//       docs/specs/012-xstate-containment.md
+//        §Seam 2 (Atlas-owned persisted payload, atlasVersion "2")
 //
 // Wraps XState's `createActor(...).start()` so:
 //   1. A persisted `AgentSnapshot` survives compound-`local` reset on entry
@@ -25,18 +27,37 @@ import type {
     Agent,
     AgentActor,
     AgentSnapshot,
+    JsonValue,
+    PersistedAgentSnapshot,
     StartAgentOptions,
 } from "./types.ts";
 
-const ATLAS_SNAPSHOT_VERSION = "1";
+// SPEC 012 §Seam 2 (DD-032): Atlas owns the persisted schema. `atlasVersion` is
+// the dispatch key — bump it whenever the payload shape changes. v2 is the
+// carrier-neutral `{ value, context }` descriptor; v1 was XState's raw blob.
+const ATLAS_SNAPSHOT_VERSION = "2";
+
+// The concrete shape behind the opaque `PersistedAgentSnapshot` brand. Internal
+// to this file; consumers only ever see the brand.
+type PersistedV2 = {
+    readonly atlasVersion: "2";
+    // Carrier-neutral active-configuration descriptor (today: XState's state
+    // value object, e.g. `{ socratic: { teaching: "$wait" } }`).
+    readonly value: JsonValue;
+    // Root context, synthetic compound-local / `$event` slots included.
+    readonly context: JsonValue;
+};
 
 /**
  * Boot an Atlas agent. Wraps `createActor(...).start()` under the hood.
  *
- * - When `options.snapshot` is provided, the actor is rehydrated from that
- *   snapshot. XState v5 does NOT re-run `entry` actions on a restored state,
- *   so compound-`local` slots in the snapshot survive (spec 009
- *   §Persistence Contract).
+ * - When `options.snapshot` is provided, the actor is rehydrated from the
+ *   Atlas-owned v2 payload (spec 012 §Seam 2): `startAgent` synthesizes the
+ *   carrier snapshot from `{ value, context }`. XState v5 does NOT re-run
+ *   `entry` actions on a restored state, so compound-`local` slots survive
+ *   (spec 009 §Persistence Contract). Snapshots stamped with an older
+ *   `atlasVersion` hit the mismatch path — soft reset to `initial`
+ *   (Clarification C2).
  * - When `options.inspect` is provided, it receives Atlas-vocabulary
  *   events. Phase 1 emits only `transition`.
  *
@@ -73,7 +94,10 @@ export function startAgent<TContext, TEvents extends { type: string }>(
     const carrier = agent.carrier as AnyStateMachine;
 
     const xstateActor = createActor(carrier, {
-        snapshot: options?.snapshot?.persisted as Snapshot<unknown> | undefined,
+        // SPEC 012 §Seam 2: resolve the restore snapshot from the Atlas v2
+        // payload, dispatching on `atlasVersion`. Older versions → undefined →
+        // fresh boot into `initial` (the mismatch path, Clarification C2).
+        snapshot: resolveRestore(options?.snapshot),
         inspect: userInspect
             ? (raw: InspectionEvent) => {
                 if (raw.type !== "@xstate.snapshot") return;
@@ -170,9 +194,48 @@ function readAwaiting(metaByNode: Record<string, unknown>): readonly string[] | 
     return undefined;
 }
 
-function buildAgentSnapshot<TContext>(persisted: Snapshot<unknown>): AgentSnapshot<TContext> {
+// SPEC 012 §Seam 2 (Save): derive the Atlas-owned `{ value, context }` payload
+// from the carrier's persisted snapshot. We drop `children`/`status` and the
+// other carrier internals Atlas neither needs nor wants to own — the survival
+// contract (spec 009) is exactly active mode path + root context, and compound
+// locals + the `$event` slot already live in context.
+function buildAgentSnapshot<TContext>(carrierSnapshot: Snapshot<unknown>): AgentSnapshot<TContext> {
+    const { value, context } = carrierSnapshot as unknown as {
+        value: JsonValue;
+        context: JsonValue;
+    };
+    const payload: PersistedV2 = { atlasVersion: ATLAS_SNAPSHOT_VERSION, value, context };
     return {
         atlasVersion: ATLAS_SNAPSHOT_VERSION,
-        persisted,
+        persisted: payload as unknown as PersistedAgentSnapshot,
     } as AgentSnapshot<TContext>;
+}
+
+// SPEC 012 §Seam 2 (Restore): resolve what to feed XState's `createActor`.
+// Dispatch on `atlasVersion`: only the current v2 payload restores; anything
+// older returns `undefined`, so the actor boots fresh into `initial` — the
+// mismatch path (Clarification C2; alpha makes no cross-version promises).
+function resolveRestore<TContext>(
+    snapshot: AgentSnapshot<TContext> | undefined,
+): Snapshot<unknown> | undefined {
+    if (snapshot === undefined) return undefined;
+    if (snapshot.atlasVersion !== ATLAS_SNAPSHOT_VERSION) return undefined;
+    return synthesizeCarrierSnapshot(snapshot.persisted as unknown as PersistedV2);
+}
+
+// SPEC 012 §Seam 2 (Restore): rebuild the minimal carrier snapshot the engine
+// needs from the Atlas payload. `{ status: "active", children: {} }` is the
+// shape XState v5's `restoreSnapshot` accepts; with `value`/`context` present
+// it restores the active configuration without re-running `entry` actions.
+// Mid-`$run` snapshots are out of scope (Clarification C9 / spec 009's
+// turn-based model: persist while parked), so active invokes are not
+// reconstructed — a restored `$wait` (the between-turns case) carries no
+// children anyway.
+function synthesizeCarrierSnapshot(payload: PersistedV2): Snapshot<unknown> {
+    return {
+        status: "active",
+        value: payload.value,
+        context: payload.context,
+        children: {},
+    } as unknown as Snapshot<unknown>;
 }

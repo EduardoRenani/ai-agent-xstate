@@ -790,6 +790,19 @@ export type AgentInspectionEvent<TContext> = {
 };
 
 declare const agentSnapshotBrand: unique symbol;
+declare const persistedBrand: unique symbol;
+
+/**
+ * Opaque, Atlas-owned persisted payload (spec 012 §Seam 2, DD-032). The
+ * concrete v2 shape is `{ atlasVersion: "2", value, context }` — an
+ * Atlas-defined, carrier-neutral descriptor — but it is **branded opaque** so
+ * hosts can type their storage layer (`PersistedAgentSnapshot`) without
+ * depending on the inside. Persist `JSON.stringify(...)` and restore with
+ * `JSON.parse(...)` at the storage boundary; do not read its fields.
+ */
+export type PersistedAgentSnapshot = {
+    readonly [persistedBrand]: true;
+};
 
 /**
  * Opaque persisted agent state. Returned by `actor.getSnapshot()`; fed back
@@ -797,12 +810,15 @@ declare const agentSnapshotBrand: unique symbol;
  * only (phantom) — used so a snapshot from agent A cannot be passed to
  * `startAgent` for an agent whose `TContext` shape differs.
  *
- * Treat the value as opaque: persist `JSON.stringify(snapshot)` and restore
- * with `JSON.parse` at the storage boundary.
+ * - `atlasVersion` is the dispatch key (spec 012 DD-032): the current schema
+ *   is `"2"`. Payloads stamped with an older version hit the mismatch path on
+ *   restore (soft reset to `initial`).
+ * - `persisted` is the Atlas-owned opaque payload — treat it as a blob:
+ *   `JSON.stringify` it to durable storage and `JSON.parse` it back.
  */
 export type AgentSnapshot<TContext> = {
     readonly atlasVersion: string;
-    readonly persisted: unknown;
+    readonly persisted: PersistedAgentSnapshot;
     readonly [agentSnapshotBrand]?: (_: TContext) => TContext;
 };
 

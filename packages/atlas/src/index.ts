@@ -38,6 +38,7 @@ export type {
     JsonCompatible,
     AgentActor,
     AgentSnapshot,
+    PersistedAgentSnapshot,
     AgentInspectionEvent,
     AgentErrorInfo,
     StartAgentOptions,

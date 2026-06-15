@@ -12,7 +12,7 @@ import { describe, expectTypeOf, test } from "vitest";
 import { defineAgent } from "../../src/defineAgent.ts";
 import { defineMode } from "../../src/defineMode.ts";
 import { startAgent } from "../../src/startAgent.ts";
-import type { Agent, AgentActor, AgentSnapshot } from "../../src/types.ts";
+import type { Agent, AgentActor, AgentSnapshot, PersistedAgentSnapshot } from "../../src/types.ts";
 
 // ── Shared fixtures ──────────────────────────────────────────────────
 
@@ -117,6 +117,21 @@ describe("Agent brand opacity", () => {
     test("a raw carrier object is not an Agent", () => {
         // @ts-expect-error - missing the phantom brand; only defineAgent can mint an Agent
         const fake: Agent<Ctx, Ev> = { carrier: {} };
+        void fake;
+    });
+});
+
+// ── PersistedAgentSnapshot opacity (spec 012 §Seam 2, C5) ────────────
+
+describe("PersistedAgentSnapshot opacity", () => {
+    test("a snapshot's persisted payload is a PersistedAgentSnapshot", () => {
+        const persisted = startAgent(agent).getSnapshot().persisted;
+        expectTypeOf(persisted).toEqualTypeOf<PersistedAgentSnapshot>();
+    });
+
+    test("hosts cannot hand-construct the payload", () => {
+        // @ts-expect-error - opaque brand; only Atlas mints PersistedAgentSnapshot
+        const fake: PersistedAgentSnapshot = { value: 1, context: 2 };
         void fake;
     });
 });
