@@ -22,6 +22,7 @@ import { createActor, type AnyStateMachine, type InspectionEvent, type Snapshot 
 
 import { formatModePath } from "./formatModePath.ts";
 import type {
+    Agent,
     AgentActor,
     AgentSnapshot,
     StartAgentOptions,
@@ -41,13 +42,18 @@ const ATLAS_SNAPSHOT_VERSION = "1";
  *
  * The returned `AgentActor` is auto-started. Call `.stop()` to dispose.
  *
- * @template TContext  The agent's root context shape. Must match the shape
- *                     the machine was declared with — `AgentSnapshot<TContext>`
- *                     refuses cross-context restores at the type level.
- * @template TEvents   The agent's full event union. Used to type `send`.
+ * SPEC 012 §Seam 1: both generics are **inferred from the `Agent` brand** —
+ * `startAgent(agent)` needs no type arguments. The explicit
+ * `startAgent<Ctx, Ev>(agent)` form still compiles but is now cross-checked
+ * against the brand, so `options.snapshot` (typed `AgentSnapshot<TContext>`)
+ * is anchored to the agent's own context, not to whatever the caller typed.
+ *
+ * @template TContext  The agent's root context shape, inferred from `agent`.
+ * @template TEvents   The agent's full event union, inferred from `agent`.
+ *                     Used to type `send`.
  */
 export function startAgent<TContext, TEvents extends { type: string }>(
-    agent: AnyStateMachine,
+    agent: Agent<TContext, TEvents>,
     options?: StartAgentOptions<TContext>,
 ): AgentActor<TContext, TEvents> {
     let previousPath: string | undefined;
@@ -61,7 +67,12 @@ export function startAgent<TContext, TEvents extends { type: string }>(
     const userInspect = options?.inspect;
     const userOnError = options?.onError;
 
-    const xstateActor = createActor(agent, {
+    // SPEC 012 §Seam 1: unwrap the opaque carrier with a single localized cast
+    // — the consume-side counterpart to the wrap in `defineAgent`. This is the
+    // only place below the seam that hands the carrier to the engine.
+    const carrier = agent.carrier as AnyStateMachine;
+
+    const xstateActor = createActor(carrier, {
         snapshot: options?.snapshot?.persisted as Snapshot<unknown> | undefined,
         inspect: userInspect
             ? (raw: InspectionEvent) => {

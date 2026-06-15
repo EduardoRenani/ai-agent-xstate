@@ -86,7 +86,7 @@ const machine = defineAgent<
     modes: { listening, answering },
 });
 
-const actor = startAgent<Ctx, Ev>(machine);
+const actor = startAgent(machine); // Ctx/Ev inferred from the agent handle
 actor.send({ type: "ASK", question: "What is a mode?" });
 ```
 
