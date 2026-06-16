@@ -23,6 +23,12 @@
 import { createActor, type AnyStateMachine, type InspectionEvent, type Snapshot } from "xstate";
 
 import { formatModePath } from "./formatModePath.ts";
+// SPEC 012 §Seam 3 (P22): the `meta.atlasAwaiting` channel is owned by
+// `xstateBackend` (it stamps the key in `buildWaitState`). We read it back here
+// through the shared constant instead of a local magic string so the channel
+// has a single source of truth. `startAgent` already imports xstate, so this
+// import crosses no boundary (boundary.test.ts stays green).
+import { ATLAS_AWAITING_META_KEY } from "./xstateBackend.ts";
 import type {
     Agent,
     AgentActor,
@@ -186,7 +192,7 @@ export function startAgent<TContext, TEvents extends { type: string }>(
 function readAwaiting(metaByNode: Record<string, unknown>): readonly string[] | undefined {
     for (const meta of Object.values(metaByNode)) {
         if (typeof meta !== "object" || meta === null) continue;
-        const awaiting = (meta as { atlasAwaiting?: unknown }).atlasAwaiting;
+        const awaiting = (meta as { [ATLAS_AWAITING_META_KEY]?: unknown })[ATLAS_AWAITING_META_KEY];
         if (Array.isArray(awaiting) && awaiting.length > 0) {
             return awaiting as readonly string[];
         }
