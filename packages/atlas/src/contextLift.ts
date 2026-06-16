@@ -25,7 +25,7 @@
 // slice 5.16; 5.13 ships the toolkit and integrates it with
 // `buildActiveState` / `buildPassiveState` via an optional `lift` argument.
 
-import { assign } from "xstate";
+import { wrapAssign, type AssignAction } from "./xstateBackend.ts";
 
 export type LiftContext = {
     readonly key: string;                                       // own slot, e.g. "__socratic_local"
@@ -155,15 +155,15 @@ export function liftInput(
     };
 }
 
-// Wrap a user `assign({ context, payload, deps }) => Partial<combined>`
-// callback, returning an XState `assign(...)` action that applies the split
+// Wrap a user `wrapAssign({ context, payload, deps }) => Partial<combined>`
+// callback, returning an XState `wrapAssign(...)` action that applies the split
 // update. `deps` is forwarded by identity from the wrapper's closure.
 export function liftExitAssign(
     userAssign: (args: { context: unknown; payload: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
-    return assign(({ context, event }) => {
+): AssignAction {
+    return wrapAssign(({ context, event }) => {
         const root = context as Record<string, unknown>;
         const sub = buildSubContext(root, lift);
         const payload = (event as unknown as { output: { payload: unknown } }).output.payload;
@@ -172,15 +172,15 @@ export function liftExitAssign(
     });
 }
 
-// Wrap a user `assign({ context, error, deps })` callback (error routes).
+// Wrap a user `wrapAssign({ context, error, deps })` callback (error routes).
 // Reads the raw error from `event.error` — the shape XState delivers on a
 // single-hop `invoke.onError`.
 export function liftErrorAssign(
     userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
-    return assign(({ context, event }) => {
+): AssignAction {
+    return wrapAssign(({ context, event }) => {
         const root = context as Record<string, unknown>;
         const sub = buildSubContext(root, lift);
         const error = (event as unknown as { error: unknown }).error;
@@ -201,8 +201,8 @@ export function liftErrorAssignFromOutput(
     userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
     lift: LiftContext,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
-    return assign(({ context, event }) => {
+): AssignAction {
+    return wrapAssign(({ context, event }) => {
         const root = context as Record<string, unknown>;
         const sub = buildSubContext(root, lift);
         const error = (event as unknown as { output: { payload: unknown } }).output.payload;
@@ -228,8 +228,8 @@ export function liftGuard(
 // scoped to this activation. Deep cloning is not promised — the spec's
 // canonical local is primitive-valued (`{ attempts: 0 }`); nested object
 // values are shared by reference.
-export function makeCompoundEntry(lift: LiftContext): ReturnType<typeof assign> {
-    return assign({
+export function makeCompoundEntry(lift: LiftContext): AssignAction {
+    return wrapAssign({
         [lift.key]: () => ({ ...lift.initialLocal }),
     });
 }
@@ -237,8 +237,8 @@ export function makeCompoundEntry(lift: LiftContext): ReturnType<typeof assign> 
 // XState `exit` action: clear this compound's local slot. The next entry
 // (if any) re-initializes via `makeCompoundEntry`, satisfying the
 // reset-on-re-entry invariant from spec line 109.
-export function makeCompoundExit(lift: LiftContext): ReturnType<typeof assign> {
-    return assign({
+export function makeCompoundExit(lift: LiftContext): AssignAction {
+    return wrapAssign({
         [lift.key]: () => undefined,
     });
 }

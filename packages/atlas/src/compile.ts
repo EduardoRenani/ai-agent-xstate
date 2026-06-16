@@ -24,8 +24,10 @@
 //     references in `routes.error` are rewritten to re-throw (matching the
 //     spec-005 "loud failure" default).
 //
-// This is the only file in `atlas` that calls `setup().createMachine`. It
-// composes the toolkit slices built in 5.1–5.15 + the spec-008 additions:
+// SPEC 012 §Seam 3 (DD-033): `compile` orchestrates the lowering but no longer
+// touches the engine — it hands the lowered config to `xstateBackend`, the one
+// module that calls `setup().createMachine`. It composes the toolkit slices
+// built in 5.1–5.15 + the spec-008 additions:
 //   - validateTargets, validateRoutes   (fail-fast at machine creation)
 //   - walk + actorName + buildActors    (active-leaf actor map)
 //   - buildActions                      (named-actions map)
@@ -35,7 +37,7 @@
 //
 // `defineAgent` returns this value verbatim.
 
-import { assign, setup, type AnyActorLogic, type AnyStateMachine, type assign as XAssign } from "xstate";
+import { createCarrier, wrapAssign, type AssignAction, type CarrierMachine } from "./xstateBackend.ts";
 
 import { buildActions } from "./buildActions.ts";
 import {
@@ -94,8 +96,8 @@ type LoweredCompoundState = {
     // skipped). Bucket sentinels in `target` are rewritten by the *outer*
     // level's `injectEndAtLevel`.
     onDone?: readonly LoweredOnDoneTransition[];
-    entry?: ReturnType<typeof XAssign>;
-    exit?: ReturnType<typeof XAssign>;
+    entry?: AssignAction;
+    exit?: AssignAction;
 };
 
 // SPEC 011 §Desugaring (DD-029): a leaf mode lowers to a mini-compound
@@ -236,7 +238,7 @@ function rewriteCompoundErrorBucketToReThrow<T extends AnyCompound>(node: T): T 
     const onDone = node.onDone.map((t): LoweredOnDoneTransition => {
         if (t.target !== END_ERROR) return t;
         const rewritten: LoweredOnDoneTransition = {
-            actions: assign(({ event }) => {
+            actions: wrapAssign(({ event }) => {
                 throw (event as unknown as { output: { payload: unknown } }).output.payload;
             }),
         };
@@ -331,7 +333,7 @@ function makeCompoundOutcomeGuard(
     };
 }
 
-// Wrap a user `assign({ context, payload, deps })` for a compound exit
+// Wrap a user `wrapAssign({ context, payload, deps })` for a compound exit
 // entry. Differs from the leaf-level `wrapAssign` only in that it always
 // reads payload from `event.output.payload` — the compound is dispatching
 // against the final substate's emitted `{ outcome, payload }` shape.
@@ -348,9 +350,9 @@ function wrapCompoundExitAssign(
     }) => object,
     parentLift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
+): AssignAction {
     if (parentLift !== undefined) {
-        return assign(({ context, event }) => {
+        return wrapAssign(({ context, event }) => {
             const root = context as Record<string, unknown>;
             const sub = buildSubContext(root, parentLift);
             const output = (event as unknown as { output: { payload: unknown } }).output;
@@ -361,7 +363,7 @@ function wrapCompoundExitAssign(
             );
         });
     }
-    return assign(({ context, event }) => {
+    return wrapAssign(({ context, event }) => {
         const output = (event as unknown as { output: { payload: unknown } }).output;
         return userAssign({ context, payload: output.payload, deps });
     });
@@ -379,9 +381,9 @@ function wrapCompoundErrorAssign(
     }) => object,
     parentLift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
+): AssignAction {
     if (parentLift !== undefined) {
-        return assign(({ context, event }) => {
+        return wrapAssign(({ context, event }) => {
             const root = context as Record<string, unknown>;
             const sub = buildSubContext(root, parentLift);
             const error = (event as unknown as { output: { payload: unknown } }).output.payload;
@@ -392,7 +394,7 @@ function wrapCompoundErrorAssign(
             );
         });
     }
-    return assign(({ context, event }) => {
+    return wrapAssign(({ context, event }) => {
         const error = (event as unknown as { output: { payload: unknown } }).output.payload;
         return userAssign({ context, error, deps });
     });
@@ -507,7 +509,7 @@ function buildCompoundErrorOnDone(
         // `assign` is dropped — same convention as the leaf RE_THROW path.
         return {
             guard,
-            actions: assign(({ event }) => {
+            actions: wrapAssign(({ event }) => {
                 throw (event as unknown as { output: { payload: unknown } }).output.payload;
             }),
         };
@@ -666,7 +668,7 @@ export function compile<
 >(
     config: AgentConfig<TContext, TEvents, TModes, TDeps>,
     frozenDeps: Readonly<TDeps>,
-): AnyStateMachine {
+): CarrierMachine {
     const rawModes = config.modes as Record<string, unknown>;
     // Erase TDeps for the loose internal contract — every build* helper takes
     // `Readonly<Record<string, unknown>>` and the user's concrete type has
@@ -691,28 +693,18 @@ export function compile<
     // final state).
     const finalStates = injectEndAtLevel(lowered, undefined, undefined, deps);
 
-    // The wrapper's type contract was discharged at the user's call site
-    // (defineMode / defineCompoundMode / defineAgent). At this internal layer
-    // every shape is `unknown`-typed by construction. XState's `setup` types
-    // are too strict to satisfy generically — its `MachineContext` constraint
-    // collides with `TContext` being arbitrary — so we hand it the already-
-    // shaped values through `unknown`. The output is `AnyStateMachine`, which
-    // is what `defineAgent` returns.
-    const looseSetup = setup as unknown as (args: {
-        types?: unknown;
-        actors?: Record<string, AnyActorLogic>;
-        actions?: Record<string, unknown>;
-    }) => { createMachine: (config: unknown) => AnyStateMachine };
-
-    const machine = looseSetup({
+    // SPEC 012 §Seam 3: hand the lowered config to the backend, which owns the
+    // `setup().createMachine` call and the `looseSetup` cast (the lowered shapes
+    // are `unknown`-typed by construction — the user's concrete types were
+    // discharged at the `defineAgent` call site).
+    return createCarrier({
         actors,
         actions,
-    }).createMachine({
-        id: config.id,
-        initial: config.initial,
-        context: config.context,
-        states: finalStates,
+        machine: {
+            id: config.id,
+            initial: config.initial,
+            context: config.context,
+            states: finalStates,
+        },
     });
-
-    return machine;
 }

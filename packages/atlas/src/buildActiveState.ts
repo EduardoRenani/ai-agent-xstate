@@ -32,7 +32,7 @@
 // `routes.error` → `$run.invoke.onError[i]` (END_ERROR bucket sentinel /
 // RE_THROW), unchanged in shape from spec 010.
 
-import { assign } from "xstate";
+import { wrapAssign, type AssignAction } from "./xstateBackend.ts";
 
 import { actorName } from "./actorName.ts";
 import {
@@ -109,7 +109,7 @@ type ModeResultEvent = {
 
 export type LoweredGuard = (args: { event: ModeResultEvent }) => boolean;
 
-type LoweredActions = ReturnType<typeof assign> | readonly ReturnType<typeof assign>[];
+type LoweredActions = AssignAction | readonly AssignAction[];
 
 // `target` widens `RouteTarget` with `EndBucketSymbol` because `END` is
 // replaced in-place with a bucket sentinel so that the LOCAL injection can
@@ -125,11 +125,11 @@ export type LoweredOnDoneTransition = {
 export type LoweredErrorGuard = (args: { event: { error: unknown } }) => boolean;
 
 // onError actions are either:
-//   - a wrapped `assign(...)` (when the user supplied `assign`), or
+//   - a wrapped `wrapAssign(...)` (when the user supplied `assign`), or
 //   - a plain re-throw function (when `target: RE_THROW`).
 export type LoweredReThrowAction = (args: { event: { error: unknown } }) => never;
 
-export type LoweredErrorAction = ReturnType<typeof assign> | LoweredReThrowAction;
+export type LoweredErrorAction = AssignAction | LoweredReThrowAction;
 
 export type LoweredOnErrorTransition = {
     guard?: LoweredErrorGuard;
@@ -150,7 +150,7 @@ export type LoweredInvokeState = {
 
 export type LoweredWaitTransition = {
     target: string;
-    actions: ReturnType<typeof assign>;
+    actions: AssignAction;
     reenter: true;
 };
 
@@ -180,7 +180,7 @@ export type LoweredModeCompound = {
     // dry run never sees the previous mode's event. The internal `$wait → $run`
     // transition (which saves the event) does not re-enter the compound, so the
     // saved event survives for the behavior.
-    entry?: ReturnType<typeof assign>;
+    entry?: AssignAction;
     states: Record<string, LoweredInvokeState | LoweredWaitState | LoweredFinalState>;
     onDone: readonly LoweredOnDoneTransition[];
 };
@@ -238,19 +238,19 @@ function wrapStayAssign(
     userAssign: UserExitAssign,
     lift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
+): AssignAction {
     if (lift !== undefined) {
         return liftExitAssign(userAssign, lift, deps);
     }
-    return assign(({ context, event }) => {
+    return wrapAssign(({ context, event }) => {
         const output = (event as unknown as { output: { payload: unknown } }).output;
         return userAssign({ context, payload: output.payload, deps });
     });
 }
 
 // Root-level action that clears the `$event` slot (`event => undefined`).
-function clearEventSlotAction(): ReturnType<typeof assign> {
-    return assign({ [EVENT_SLOT]: () => undefined });
+function clearEventSlotAction(): AssignAction {
+    return wrapAssign({ [EVENT_SLOT]: () => undefined });
 }
 
 function buildStayReplayTransition(
@@ -269,7 +269,7 @@ function buildStayReplayTransition(
     };
 
     const userAssign = entry.assign as UserExitAssign | undefined;
-    const actions: ReturnType<typeof assign>[] = [];
+    const actions: AssignAction[] = [];
     // active CLEARS the slot; passive KEEPS it. The slot lives in root context,
     // so it is a separate root-level `assign` composed with the (possibly
     // lift-split) user assign.
@@ -361,7 +361,7 @@ function buildWaitState(events: readonly string[]): LoweredWaitState {
     for (const eventType of events) {
         on[eventType] = {
             target: "$run",
-            actions: assign(({ event }) => ({ [EVENT_SLOT]: event })),
+            actions: wrapAssign(({ event }) => ({ [EVENT_SLOT]: event })),
             reenter: true,
         };
     }
@@ -394,11 +394,11 @@ function wrapFooExitAssign(
     userAssign: UserExitAssign,
     lift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
+): AssignAction {
     if (lift !== undefined) {
         return liftExitAssign(userAssign, lift, deps);
     }
-    return assign(({ context, event }) => {
+    return wrapAssign(({ context, event }) => {
         const output = (event as unknown as { output: { payload: unknown } }).output;
         return userAssign({ context, payload: output.payload, deps });
     });
@@ -408,7 +408,7 @@ function wrapFooErrorAssign(
     userAssign: UserErrorAssign,
     lift: LiftContext | undefined,
     deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
+): AssignAction {
     // SPEC 011: under a compound-local lift, the error `assign` must see the
     // lifted view and split its writes — symmetric with the exit path
     // (`wrapFooExitAssign`). The raw error arrives at `foo.onDone[error]` as
@@ -416,7 +416,7 @@ function wrapFooErrorAssign(
     if (lift !== undefined) {
         return liftErrorAssignFromOutput(userAssign, lift, deps);
     }
-    return assign(({ context, event }) => {
+    return wrapAssign(({ context, event }) => {
         const error = (event as unknown as { output: { payload: unknown } }).output.payload;
         return userAssign({ context, error, deps });
     });
@@ -453,7 +453,7 @@ function buildFooErrorTransition(
     if (entry.target === RE_THROW) {
         return {
             guard,
-            actions: assign(({ event }) => {
+            actions: wrapAssign(({ event }) => {
                 throw (event as unknown as { output: { payload: unknown } }).output.payload;
             }),
         };

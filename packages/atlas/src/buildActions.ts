@@ -5,13 +5,13 @@
 // Spec 005: the wrapper closes over the agent's frozen `deps` reference
 // and threads it into every named action's argument envelope.
 //
-// The user wrote a plain callback returning `Partial<TContext>`. The wrapper
-// is the only place that calls `xstate.assign(...)` for these — user code
-// never imports from `xstate`. The callback's return type is forwarded to
-// XState untouched (a runtime identity — the wrapper just adds the assign
-// envelope so XState applies the patch to the context store).
+// The user wrote a plain callback returning `Partial<TContext>`. The backend's
+// `wrapAssign` is the only place that touches the engine's context-update
+// primitive — user code never imports from `xstate`. The callback's return
+// type is forwarded untouched (a runtime identity — the wrapper just adds the
+// assign envelope so the engine applies the patch to the context store).
 
-import { assign } from "xstate";
+import { wrapAssign, type AssignAction } from "./xstateBackend.ts";
 
 type UserActionCallback = (args: {
     context: unknown;
@@ -24,11 +24,11 @@ export function buildActions(
         | Readonly<Record<string, UserActionCallback>>
         | undefined,
     deps: Readonly<Record<string, unknown>>,
-): Record<string, ReturnType<typeof assign>> {
+): Record<string, AssignAction> {
     if (actions === undefined) return {};
-    const out: Record<string, ReturnType<typeof assign>> = {};
+    const out: Record<string, AssignAction> = {};
     for (const [name, callback] of Object.entries(actions)) {
-        out[name] = assign(({ context, event }) => callback({ context, event, deps }));
+        out[name] = wrapAssign(({ context, event }) => callback({ context, event, deps }));
     }
     return out;
 }

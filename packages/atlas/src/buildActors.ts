@@ -10,8 +10,7 @@
 // from the `$event` slot (`undefined` on a dry run / active entry). This wrapper
 // unpacks it and calls `behavior({ input: userInput, event, deps })`.
 
-import { fromPromise } from "xstate";
-import type { AnyActorLogic } from "xstate";
+import { fromPromiseActor, type CarrierActor } from "./xstateBackend.ts";
 
 import { actorName } from "./actorName.ts";
 import type { Slot } from "./walk.ts";
@@ -19,8 +18,8 @@ import type { Slot } from "./walk.ts";
 export function buildActors(
     slots: readonly Slot[],
     deps: Readonly<Record<string, unknown>>,
-): Record<string, AnyActorLogic> {
-    const actors: Record<string, AnyActorLogic> = {};
+): Record<string, CarrierActor> {
+    const actors: Record<string, CarrierActor> = {};
     for (const slot of slots) {
         if (slot.kind !== "leaf") continue;
         const config = slot.config;
@@ -49,7 +48,7 @@ export function buildActors(
         }) => Promise<unknown>;
         // The `$run.invoke.input` envelope is `{ userInput, event }`. Unpack it
         // and thread the waking `event` through to the behavior (SPEC 011).
-        actors[name] = fromPromise(async ({ input }) => {
+        actors[name] = fromPromiseActor(async ({ input }) => {
             const envelope = input as { userInput: unknown; event: unknown };
             return userBehavior({
                 input: envelope.userInput,
