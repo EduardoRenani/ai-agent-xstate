@@ -1,6 +1,6 @@
 {
     "name": "@eduardorenani/atlasjs",
-    "version": "0.1.0-alpha.6",
+    "version": "0.1.0-alpha.7",
     "description": "Mode-based agent orchestration. Typed modes, four-outcome contract, goal-bound exits.",
     "type": "module",
     "main": "./dist/index.js",
