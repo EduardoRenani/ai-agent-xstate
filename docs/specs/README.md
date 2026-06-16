@@ -13,4 +13,4 @@
 | 009 | Snapshot-Aware Rehydration and Atlas Actor Surface | Done   |
 | 010 | Host-Side Error Channel (`onError`) | Draft  |
 | 011 | Unified Modes (active/passive, `outcome`/`stay`)   | Done   |
-| 012 | XState Containment (owned seam, snapshot, IR) | Draft  |
+| 012 | XState Containment (owned seam, snapshot, IR) | Done   |

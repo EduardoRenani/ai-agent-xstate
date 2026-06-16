@@ -2,9 +2,18 @@
 
 ## Status
 
-Draft. Nothing implemented yet. Produced from the 2026-06-11 audit of the
-XState coupling surface; every file:line cited below was verified against the
-working tree at that date (post spec 011, `@eduardorenani/atlasjs@0.1.0-alpha.6`).
+Completed (2026-06-16). All four phases shipped and verified against a green
+suite (boundary tripwire included); `examples/zoe` typechecks clean. Produced
+from the 2026-06-11 audit of the XState coupling surface; every file:line cited
+below was verified against the working tree at that date (post spec 011,
+`@eduardorenani/atlasjs@0.1.0-alpha.6`).
+
+Implementation note: the audit's recommended cleanup landed as part of phase 4
+— `lowerToIr` + `xstateBackend.translateAgent` subsumed and replaced the old
+lowering modules (`buildActiveState`, `injectEnd`, `buildActors`, `buildActions`,
+`walk`), which were removed along with their white-box tests. The lowering
+behavior is now covered end-to-end by the integration suites (the single path is
+`defineAgent → compile → lowerToIr → translateAgent`).
 
 > This spec does **not** replace XState. The recorded decision that XState's
 > runtime stays (design-decisions.md:269-272, the rejected-alternatives block
