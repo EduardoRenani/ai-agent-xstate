@@ -12,10 +12,10 @@ Monorepo with two packages:
 ## Install
 
 ```bash
-npm install @eduardorenani/atlasjs@alpha xstate
+npm install @eduardorenani/atlasjs@alpha
 ```
 
-`xstate@^5` is a peer dependency. ESM only, Node ≥ 20.
+ESM only, Node ≥ 20. The state-machine engine is a fully internal dependency — consumers don't install it.
 
 User-facing docs: [`docs/USAGE.md`](docs/USAGE.md). Spec index: [`docs/specs/README.md`](docs/specs/README.md).
 
@@ -29,9 +29,9 @@ User-facing docs: [`docs/USAGE.md`](docs/USAGE.md). Spec index: [`docs/specs/REA
 
 Three constructors (`defineMode`, `defineCompoundMode`, `defineAgent`) are the only way to express the shape. The type system rejects anything that doesn't fit: active+passive mixing in the same leaf, modes missing outcomes, cross-compound targets, retry with arbitrary target.
 
-State machines (XState v5) live under the hood — atlas compiles to one to get the formal carrier (transitions, hierarchy, snapshot/replay) without exposing it as the API surface. Hosts boot the agent via `startAgent(machine, { snapshot?, inspect? })` and never import from `xstate` directly. The actor returned exposes `send` / `stop` / `getSnapshot`; `getSnapshot` produces an opaque `AgentSnapshot` that round-trips through JSON storage and rehydrates the full state on the next turn — compound `local` slots included.
+State machines (XState v5) live under the hood — atlas compiles to one to get the formal carrier (transitions, hierarchy, snapshot/replay) without exposing it as the API surface. The engine is contained behind a single backend module (spec 012): `defineAgent` returns an opaque `Agent<TContext, TEvents>` handle, hosts boot it via `startAgent(agent, { snapshot?, inspect? })` (the type parameters infer from the handle) and never import from `xstate`. The actor returned exposes `send` / `stop` / `getSnapshot`; `getSnapshot` produces an opaque `AgentSnapshot` — an Atlas-owned, carrier-neutral payload — that round-trips through JSON storage and rehydrates the full state on the next turn, compound `local` slots included.
 
-Specs: [`004-xstate-agent-wrapper.md`](docs/specs/004-xstate-agent-wrapper.md) (the API contract) and [`009-snapshot-aware-rehydration.md`](docs/specs/009-snapshot-aware-rehydration.md) (the `startAgent` actor surface + multi-turn persistence contract).
+Specs: [`004-xstate-agent-wrapper.md`](docs/specs/004-xstate-agent-wrapper.md) (the API contract), [`009-snapshot-aware-rehydration.md`](docs/specs/009-snapshot-aware-rehydration.md) (the `startAgent` actor surface + multi-turn persistence contract), and [`012-xstate-containment.md`](docs/specs/012-xstate-containment.md) (the `Agent` handle, the owned snapshot, and the single-backend containment).
 
 ## Zoe (example agent)
 
