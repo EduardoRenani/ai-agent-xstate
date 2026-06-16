@@ -1,10 +1,12 @@
 # @eduardorenani/atlasjs
 
-> Mode-based agent orchestration on top of XState v5. You build an agent as a set
+> Mode-based agent orchestration for TypeScript. You build an agent as a set
 > of **modes** (one mental state at a time); each mode runs a `behavior` and
 > returns a `ModeResult` that either LEAVES the mode (an `outcome`) or STAYS and
-> re-runs (a `stay`). XState is an internal dependency — it never appears in this
-> API. ESM only, Node >= 20. `xstate@^5` is a peer dependency.
+> re-runs (a `stay`). The state-machine engine (XState) is a fully internal
+> dependency — it never appears in the API or the install: consumers install
+> only this package, `defineAgent` returns an opaque `Agent` handle, and the
+> persisted snapshot is an Atlas-owned shape. ESM only, Node >= 20.
 
 This file is an LLM-oriented API reference. It is dense and complete by design.
 Types are the source of truth; signatures below mirror `src/types.ts`.
@@ -28,7 +30,7 @@ Types are the source of truth; signatures below mirror `src/types.ts`.
 ## Exports
 
 Runtime: `defineMode`, `defineCompoundMode`, `defineAgent`, `startAgent`, `END`, `RE_THROW`.
-Types: `Mode`, `CompoundMode`, `ModeConfig`, `RunModeConfig`, `EventModeConfig`, `CompoundModeConfig`, `AgentConfig`, `ModesMap`, `ModeResult`, `Outcome`, `Stay`, `Routes`, `StayMap`, `RouteList`, `RouteTarget`, `ErrorRouteTarget`, `CompoundContext`, `AgentActor`, `AgentSnapshot`, `AgentInspectionEvent`, `AgentErrorInfo`, `StartAgentOptions`, `JsonValue`, `JsonObject`, `JsonArray`, `JsonPrimitive`, `JsonCompatible`.
+Types: `Mode`, `CompoundMode`, `ModeConfig`, `RunModeConfig`, `EventModeConfig`, `CompoundModeConfig`, `AgentConfig`, `Agent`, `ModesMap`, `ModeResult`, `Outcome`, `Stay`, `Routes`, `StayMap`, `RouteList`, `RouteTarget`, `ErrorRouteTarget`, `CompoundContext`, `AgentActor`, `AgentSnapshot`, `PersistedAgentSnapshot`, `AgentInspectionEvent`, `AgentErrorInfo`, `StartAgentOptions`, `JsonValue`, `JsonObject`, `JsonArray`, `JsonPrimitive`, `JsonCompatible`.
 
 ## Core types
 
@@ -132,9 +134,14 @@ function defineAgent<TContext, TEvents, TModes, TDeps = {}>(config: {
   events: TEvents;                                     // phantom: pass `{} as TEvents`
   deps?: Readonly<TDeps>;                              // frozen container of external resources
   modes: TModes;                                       // map of defineMode / defineCompoundMode
-}): /* opaque XState machine */;
+}): Agent<TContext, TEvents>;                          // opaque Atlas handle — NOT an XState machine
 
-function startAgent<TContext, TEvents>(machine, options?: {
+// `Agent<TContext, TEvents>` is an opaque brand. Feeding it to the engine's own
+// boot API does not typecheck — `startAgent` is the only door. Both generics are
+// INFERRED from the handle: call `startAgent(agent)` with no type arguments. The
+// explicit `startAgent<Ctx, Ev>(agent)` form still compiles but is cross-checked
+// against the brand (a mismatch is a compile error).
+function startAgent<TContext, TEvents>(agent: Agent<TContext, TEvents>, options?: {
   snapshot?: AgentSnapshot<TContext>;                  // resume a previous turn
   inspect?: (e: AgentInspectionEvent<TContext>) => void;
   onError?: (info: AgentErrorInfo<TContext>) => void;  // fires when a rejection escapes routes.error
@@ -150,7 +157,7 @@ type AgentInspectionEvent<TContext> = {
 type AgentErrorInfo<TContext> = { error: unknown; modePath: string; context: TContext; snapshot: AgentSnapshot<TContext> };
 ```
 
-`startAgent` is the only runtime boundary; hosts never import from `xstate`. `AgentSnapshot` is opaque — persist `JSON.stringify(snapshot)` and feed it back as `{ snapshot }` next turn.
+`startAgent` is the only runtime boundary; hosts never import from `xstate`. `AgentSnapshot` is opaque (its `persisted` payload is typed `PersistedAgentSnapshot`, an Atlas-owned `{ value, context }` shape stamped `atlasVersion: "2"`) — persist `JSON.stringify(snapshot)` and feed it back as `{ snapshot }` next turn. A snapshot from an older `atlasVersion` is rejected on restore and the agent soft-resets to `initial` (alpha makes no cross-version snapshot promises).
 
 ## Tokens
 
@@ -164,7 +171,7 @@ type AgentErrorInfo<TContext> = { error: unknown; modePath: string; context: TCo
 - `ModeResult` cannot mix `outcome` and `stay` (enforced via `?: never`).
 - `RouteList` array form: non-last entries MUST have `when`; the last MUST NOT; `[]` is rejected for achieved/abandoned/error.
 - `target` strings name a sibling in the IMMEDIATE enclosing `modes` map. No dotted paths, no XState absolute (`#`) paths — use `END` to exit a compound. Validated at machine-creation time (`defineAgent`).
-- `behavior` is async and pure of XState; all context mutation goes through `assign` callbacks returning `Partial<TContext>`.
+- `behavior` is async and engine-agnostic; all context mutation goes through `assign` callbacks (the `assign` field on routes/stay entries) returning `Partial<TContext>`.
 
 ## Examples
 
@@ -198,11 +205,11 @@ const answering = defineMode<Ctx, Ev, { answer: string }>({
   },
 });
 
-const machine = defineAgent<Ctx, Ev, { listening: typeof listening; answering: typeof answering }>({
+const agent = defineAgent<Ctx, Ev, { listening: typeof listening; answering: typeof answering }>({
   id: "qa", initial: "listening", context: { question: "", answer: "" }, events: {} as Ev,
   modes: { listening, answering },
 });
-const actor = startAgent<Ctx, Ev>(machine);
+const actor = startAgent(agent);                       // Ctx/Ev inferred from the Agent handle
 actor.send({ type: "ASK", question: "What is a mode?" });
 ```
 
@@ -229,7 +236,7 @@ Multi-turn host (snapshot rehydration):
 ```ts
 async function runTurn(text: string, snapshot?: AgentSnapshot<Ctx>): Promise<AgentSnapshot<Ctx>> {
   let done!: () => void; const ready = new Promise<void>(r => (done = r));
-  const actor = startAgent<Ctx, Ev>(machine, {
+  const actor = startAgent(agent, {
     snapshot,
     inspect: (e) => { if (e.awaiting?.length) done(); }, // resumed & parked again
   });
@@ -251,5 +258,6 @@ async function runTurn(text: string, snapshot?: AgentSnapshot<Ctx>): Promise<Age
 
 - Types (source of truth): https://github.com/EduardoRenani/atlas/blob/main/packages/atlas/src/types.ts
 - Spec — unified modes: https://github.com/EduardoRenani/atlas/blob/main/docs/specs/011-self-suspending-modes.md
+- Spec — XState containment (Agent handle, owned snapshot, IR): https://github.com/EduardoRenani/atlas/blob/main/docs/specs/012-xstate-containment.md
 - Worked example (CLI agent): https://github.com/EduardoRenani/atlas/tree/main/examples/zoe
 - README: https://github.com/EduardoRenani/atlas/blob/main/packages/atlas/README.md

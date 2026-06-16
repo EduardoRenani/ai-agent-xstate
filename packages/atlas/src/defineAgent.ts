@@ -1,12 +1,13 @@
-// `defineAgent` — constructs the root XState machine.
+// `defineAgent` — constructs the root agent handle.
 //
 // Spec: docs/specs/004-xstate-agent-wrapper.md §`defineAgent`
 //        + docs/specs/005-agent-deps-and-stringifiable-context.md §`defineAgent`
+//        + docs/specs/012-xstate-containment.md §Seam 1 (DD-030)
 //
-// `defineAgent` is the only constructor that touches `xstate`: it returns an
-// `AnyStateMachine` so the rest of the project (`createActor`, the inspector,
-// existing tests) keeps working unchanged. The lowering itself lives in
-// `compile.ts`.
+// SPEC 012 §Seam 1: `defineAgent` returns an opaque `Agent<TContext, TEvents>`
+// handle, not the carrier machine. The compiled carrier is wrapped behind the
+// Atlas brand so no engine type reaches a consumer-facing signature; only
+// `startAgent` unwraps it. The lowering itself lives in `compile.ts`.
 //
 // Deps lifecycle (spec 005 §Imutabilidade):
 //   - `Object.freeze` is applied once, here, before the closure is captured.
@@ -14,21 +15,18 @@
 //     every generated callback's closure. There is no runtime path to swap
 //     deps after this call returns.
 
-import type { AnyStateMachine } from "xstate";
-
 import { compile } from "./compile.ts";
-import type { AgentConfig, ModesMap } from "./types.ts";
+import type { Agent, AgentConfig, ModesMap } from "./types.ts";
 
 /**
- * Construct the **root agent** — compiles the declarative `AgentConfig` into
- * a runnable XState machine. This is the single boundary where the wrapper
- * touches `xstate`: the return type is `AnyStateMachine`, so callers feed it
- * straight into `createActor`, the inspector, and existing tests.
+ * Construct the **root agent** — compiles the declarative `AgentConfig` into a
+ * runnable `Agent<TContext, TEvents>` handle. Boot it with `startAgent`; the
+ * handle is opaque and Atlas-owned (spec 012 §Seam 1).
  *
  * The agent's `modes` map can mix `Mode`s (leaves) and nested `CompoundMode`s
  * freely. The compile step lowers them, validates sibling-target references,
  * injects the `END` synthetic state per-compound when referenced, and wires
- * the payload-driven `routes` into XState transitions.
+ * the payload-driven `routes` into transitions.
  *
  * @template TContext  The agent's root context shape. Constrained to
  *                     `JsonCompatible<TContext>` so the snapshot round-trips
@@ -46,11 +44,12 @@ import type { AgentConfig, ModesMap } from "./types.ts";
  * @param config  `{ id, initial, context, events, deps?, actions?, modes }`.
  *                `actions` registers reusable, deps-aware callbacks (each
  *                returning `Partial<TContext>`) referenced by name from
- *                passive `on[event].actions`. The wrapper wraps them in
- *                `assign(...)` at compile time, so user code never imports
- *                from `xstate`.
+ *                passive `on[event].actions`. Atlas applies the context-merge
+ *                at compile time, so user code never imports from the engine.
  *
- * @returns An `AnyStateMachine` ready to pass to `createActor`.
+ * @returns An opaque `Agent<TContext, TEvents>` handle. Boot it with
+ *          `startAgent(agent)`, which infers `TContext`/`TEvents` from the
+ *          brand — there is no other entry point.
  *
  * @example
  * ```ts
@@ -69,7 +68,7 @@ import type { AgentConfig, ModesMap } from "./types.ts";
  *     modes: { listening, classifying, greetings, socratic },
  * });
  *
- * const actor = createActor(agent).start();
+ * const actor = startAgent(agent); // Ctx/Ev inferred from the handle
  * actor.send({ type: "USER_MSG", text: "hi" });
  * ```
  */
@@ -78,11 +77,15 @@ export function defineAgent<
     TEvents extends { type: string },
     TModes extends ModesMap<TContext, TEvents, TDeps>,
     TDeps extends Record<string, unknown> = Record<string, never>,
->(config: AgentConfig<TContext, TEvents, TModes, TDeps>): AnyStateMachine {
+>(config: AgentConfig<TContext, TEvents, TModes, TDeps>): Agent<TContext, TEvents> {
     // Spec 005 §Imutabilidade: shallow freeze the deps container once, here,
     // before passing the reference to `compile`. The default-empty branch
     // produces a frozen `{}` so callbacks observe `Object.isFrozen(deps) === true`
     // even when the consumer omits `deps`.
     const frozenDeps = Object.freeze(config.deps ?? ({} as TDeps));
-    return compile(config, frozenDeps);
+    // SPEC 012 §Seam 1: wrap the compiled carrier in the opaque Agent brand.
+    // The brand's properties are phantom at the type level (`agentBrand`,
+    // `__phantomAgent`); only `carrier` is a real runtime field. The single
+    // cast here is the seam's one localized type assertion on the produce side.
+    return { carrier: compile(config, frozenDeps) } as Agent<TContext, TEvents>;
 }

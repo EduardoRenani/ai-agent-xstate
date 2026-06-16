@@ -1,31 +1,27 @@
-// Phase 5.13 helpers: compound-local context lift.
+// Compound-local context lift — the read-view + slot-lifecycle primitives.
 //
-// Spec: docs/specs/004-tasks.md Phase 5.13,
-// docs/specs/004-xstate-agent-wrapper.md §"Lexical scoping of context"
-// (lines 104-111) and §Mapping line 626.
+// Spec: docs/specs/004-xstate-agent-wrapper.md §"Lexical scoping of context"
+//       + docs/specs/012-xstate-containment.md §Seam 3 (DD-033).
 //
 // A `CompoundMode` with `context: { inherit, local }` exposes a narrowed view
-// to its children: `Pick<TParent, inherit[number]> & typeof local`. At runtime the
-// wrapper materializes this view by:
-//   - allocating a slot under a generated root-context key (`__<path>_local`)
-//     initialized to `local` on every entry, cleared on every exit
-//   - wrapping each child callback (`input`, `assign`, passive `guard`) so
-//     the `context` they see is the virtual merged view, and any `Partial`
-//     they return is split back to the correct destination
+// to its children: `Pick<TParent, inherit[number]> & typeof local`. At runtime
+// the lift materializes this view by allocating a slot under a generated
+// root-context key (`__<path>_local`), initialized to `local` on every entry
+// and cleared on every exit.
 //
-// Inherit keys are read live from the parent (no copy on entry, no
-// project-back on exit) — writes propagate through to the owning slot in
-// the same step. Local keys live in this compound's own slot and reset
-// automatically on re-entry. Nested compounds chain: a nested `LiftContext`
-// carries a `parent` reference that the helpers walk to resolve inherit
-// reads/writes.
+// Inherit keys are read live from the parent (no copy on entry, no project-back
+// on exit). Local keys live in this compound's own slot and reset automatically
+// on re-entry. Nested compounds chain: a nested `LiftContext` carries a `parent`
+// reference that `buildSubContext` walks to resolve inherit reads.
 //
-// The actual emission of `entry`/`exit` actions onto a lowered compound
-// shape, plus the threading of `LiftContext` through the walk, lands in
-// slice 5.16; 5.13 ships the toolkit and integrates it with
-// `buildActiveState` / `buildPassiveState` via an optional `lift` argument.
+// SPEC 012 §Seam 3: this module exposes only the engine-neutral lift primitives
+// — `compoundLocalKey`, `buildSubContext` (read-view), and the slot
+// `makeCompoundEntry` / `makeCompoundExit` actions. `xstateBackend`'s IR
+// translator owns the write-split (`splitUserUpdate`) and the patch/guard
+// adaptation; the per-callback `lift*` wrappers and the split helper that used
+// to live here were removed when the lowering moved to the IR.
 
-import { assign } from "xstate";
+import { wrapAssign, type AssignAction } from "./xstateBackend.ts";
 
 export type LiftContext = {
     readonly key: string;                                       // own slot, e.g. "__socratic_local"
@@ -83,153 +79,13 @@ export function buildSubContext(
     return sub;
 }
 
-// Walk up the parent chain to find which ancestor declared `key` as a
-// local. If no ancestor owns it, the key lives in the agent's root context.
-function findInheritOwner(
-    key: string,
-    parent: LiftContext | undefined,
-): { kind: "root" } | { kind: "slot"; slotKey: string } {
-    if (parent === undefined) return { kind: "root" };
-    if (localKeys(parent).includes(key)) return { kind: "slot", slotKey: parent.key };
-    return findInheritOwner(key, parent.parent);
-}
-
-// Split the user's `Partial<combined>` return into a root-context patch
-// XState's `assign` can apply. Local writes update this compound's slot;
-// inherit writes update either the agent root or an ancestor's slot,
-// depending on where the key was declared as local.
-function splitUserUpdate(
-    update: Record<string, unknown>,
-    rootContext: Record<string, unknown>,
-    lift: LiftContext,
-): Record<string, unknown> {
-    const ownLocals = localKeys(lift);
-    const rootPatch: Record<string, unknown> = {};
-    const slotPatches: Record<string, Record<string, unknown>> = {};
-
-    function touchSlot(slotKey: string, k: string, v: unknown): void {
-        const existing = slotPatches[slotKey] ?? {};
-        existing[k] = v;
-        slotPatches[slotKey] = existing;
-    }
-
-    for (const [k, v] of Object.entries(update)) {
-        if (ownLocals.includes(k)) {
-            touchSlot(lift.key, k, v);
-            continue;
-        }
-        if (lift.inherit.includes(k)) {
-            const owner = findInheritOwner(k, lift.parent);
-            if (owner.kind === "root") {
-                rootPatch[k] = v;
-            } else {
-                touchSlot(owner.slotKey, k, v);
-            }
-            continue;
-        }
-        // Out-of-scope key: the type system already rejected it. A bypass
-        // via `as` reaches here — drop silently rather than leak into root.
-    }
-
-    // XState `assign` is shallow at the root level — we must hand it the
-    // full new slot object, not a delta.
-    for (const [slotKey, patch] of Object.entries(slotPatches)) {
-        const current = (rootContext[slotKey] ?? {}) as Record<string, unknown>;
-        rootPatch[slotKey] = { ...current, ...patch };
-    }
-
-    return rootPatch;
-}
-
-// Wrap a user `input({ context, deps })` callback so it sees the virtual
-// view. `deps` is captured verbatim from the closure that `compile.ts`
-// threaded down — the lift only transforms `context`.
-export function liftInput(
-    userInput: (args: { context: unknown; deps: Readonly<Record<string, unknown>> }) => unknown,
-    lift: LiftContext,
-    deps: Readonly<Record<string, unknown>>,
-): (args: { context: unknown }) => unknown {
-    return ({ context }) => {
-        const sub = buildSubContext(context as Record<string, unknown>, lift);
-        return userInput({ context: sub, deps });
-    };
-}
-
-// Wrap a user `assign({ context, payload, deps }) => Partial<combined>`
-// callback, returning an XState `assign(...)` action that applies the split
-// update. `deps` is forwarded by identity from the wrapper's closure.
-export function liftExitAssign(
-    userAssign: (args: { context: unknown; payload: unknown; deps: Readonly<Record<string, unknown>> }) => object,
-    lift: LiftContext,
-    deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
-    return assign(({ context, event }) => {
-        const root = context as Record<string, unknown>;
-        const sub = buildSubContext(root, lift);
-        const payload = (event as unknown as { output: { payload: unknown } }).output.payload;
-        const update = userAssign({ context: sub, payload, deps }) as Record<string, unknown>;
-        return splitUserUpdate(update, root, lift);
-    });
-}
-
-// Wrap a user `assign({ context, error, deps })` callback (error routes).
-// Reads the raw error from `event.error` — the shape XState delivers on a
-// single-hop `invoke.onError`.
-export function liftErrorAssign(
-    userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
-    lift: LiftContext,
-    deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
-    return assign(({ context, event }) => {
-        const root = context as Record<string, unknown>;
-        const sub = buildSubContext(root, lift);
-        const error = (event as unknown as { error: unknown }).error;
-        const update = userAssign({ context: sub, error, deps }) as Record<string, unknown>;
-        return splitUserUpdate(update, root, lift);
-    });
-}
-
-// SPEC 011: a mode's error route now runs its `assign` on `foo.onDone[error]`,
-// where the raw error has been FORWARDED through the `$end_error` final as
-// `event.output.payload` (not `event.error`, which is only live on the
-// single-hop `invoke.onError`). Same lifted read-view + write-split as
-// `liftErrorAssign`, differing only in where the error is sourced from. Without
-// this the error `assign` would not split into the compound-local slot — the
-// exit (`achieved`/`abandoned`) path already lifts via `liftExitAssign`, and the
-// error path must do the same.
-export function liftErrorAssignFromOutput(
-    userAssign: (args: { context: unknown; error: unknown; deps: Readonly<Record<string, unknown>> }) => object,
-    lift: LiftContext,
-    deps: Readonly<Record<string, unknown>>,
-): ReturnType<typeof assign> {
-    return assign(({ context, event }) => {
-        const root = context as Record<string, unknown>;
-        const sub = buildSubContext(root, lift);
-        const error = (event as unknown as { output: { payload: unknown } }).output.payload;
-        const update = userAssign({ context: sub, error, deps }) as Record<string, unknown>;
-        return splitUserUpdate(update, root, lift);
-    });
-}
-
-// Wrap a user `guard({ context, event, deps })` (passive `on` transitions).
-export function liftGuard(
-    userGuard: (args: { context: unknown; event: unknown; deps: Readonly<Record<string, unknown>> }) => boolean,
-    lift: LiftContext,
-    deps: Readonly<Record<string, unknown>>,
-): (args: { context: unknown; event: unknown }) => boolean {
-    return ({ context, event }) => {
-        const sub = buildSubContext(context as Record<string, unknown>, lift);
-        return userGuard({ context: sub, event, deps });
-    };
-}
-
 // XState `entry` action: initialize this compound's local slot. A fresh
 // shallow copy of `initialLocal` per entry so subsequent mutations stay
 // scoped to this activation. Deep cloning is not promised — the spec's
 // canonical local is primitive-valued (`{ attempts: 0 }`); nested object
 // values are shared by reference.
-export function makeCompoundEntry(lift: LiftContext): ReturnType<typeof assign> {
-    return assign({
+export function makeCompoundEntry(lift: LiftContext): AssignAction {
+    return wrapAssign({
         [lift.key]: () => ({ ...lift.initialLocal }),
     });
 }
@@ -237,8 +93,8 @@ export function makeCompoundEntry(lift: LiftContext): ReturnType<typeof assign> 
 // XState `exit` action: clear this compound's local slot. The next entry
 // (if any) re-initializes via `makeCompoundEntry`, satisfying the
 // reset-on-re-entry invariant from spec line 109.
-export function makeCompoundExit(lift: LiftContext): ReturnType<typeof assign> {
-    return assign({
+export function makeCompoundExit(lift: LiftContext): AssignAction {
+    return wrapAssign({
         [lift.key]: () => undefined,
     });
 }

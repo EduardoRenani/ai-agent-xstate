@@ -1,8 +1,9 @@
-// Atlas — XState wrapper for AI agent orchestration.
+// Atlas — mode-based agent orchestration.
 //
 // Spec: docs/specs/004-xstate-agent-wrapper.md
 //       docs/specs/005-agent-deps-and-stringifiable-context.md
 //       docs/specs/009-snapshot-aware-rehydration.md
+//       docs/specs/012-xstate-containment.md
 // Tasks: docs/specs/004-tasks.md
 
 export { defineMode } from "./defineMode.ts";
@@ -24,6 +25,7 @@ export type {
     AgentConfig,
     ModesMap,
     CompoundContext,
+    Agent,
     Routes,
     StayMap,
     RouteList,
@@ -36,6 +38,7 @@ export type {
     JsonCompatible,
     AgentActor,
     AgentSnapshot,
+    PersistedAgentSnapshot,
     AgentInspectionEvent,
     AgentErrorInfo,
     StartAgentOptions,

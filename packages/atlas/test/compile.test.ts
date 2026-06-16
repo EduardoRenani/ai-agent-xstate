@@ -1,11 +1,12 @@
-// Phase 5.16 runtime tests: final emit — `compile()` composes every slice
-// (validators + walk + buildActors + buildActions + buildActiveState with
-// parent lift + per-level END injection) and hands the result to
-// `setup({...}).createMachine({...})`. `defineAgent` returns that machine.
+// Runtime tests for `compile()` — the end-to-end lowering. `compile` runs the
+// validators, produces the Atlas IR (`lowerToIr`), and hands it to the backend
+// translator (`xstateBackend.translateAgent`) which emits the carrier machine.
+// `defineAgent` wraps that machine in the opaque `Agent` handle (spec 012).
+// These tests drive the machine and assert on its observable behavior.
 //
-// Spec: docs/specs/004-tasks.md Phase 5.16 +
-// docs/specs/004-xstate-agent-wrapper.md §Mapping +
-// docs/specs/011-self-suspending-modes.md §Desugaring.
+// Spec: docs/specs/004-xstate-agent-wrapper.md §Mapping +
+// docs/specs/011-self-suspending-modes.md §Desugaring +
+// docs/specs/012-xstate-containment.md §Seam 3.
 //
 // SPEC 011 adaptations applied throughout (observable behaviour preserved):
 //   - `ModeOutput` → `ModeResult`; the `retry` route is gone.
@@ -20,22 +21,29 @@
 //     transition), so tests that send an event now `await settle()` before
 //     asserting — same observable result, just the model's real async timing.
 
-import { createActor } from "xstate";
+import { createActor, type AnyStateMachine } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
 import { defineCompoundMode } from "../src/defineCompoundMode.ts";
 import { END, RE_THROW } from "../src/types.ts";
-import type { ModeResult } from "../src/types.ts";
+import type { Agent, ModeResult } from "../src/types.ts";
 
 type Ctx = { readonly messages: readonly string[]; readonly turns: number };
 type Events = { type: "MESSAGE"; text: string };
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+// SPEC 012 §Seam 1: `defineAgent` now returns the opaque `Agent` handle. These
+// tests drive the compiled carrier through `createActor` directly to inspect
+// lowering internals, so they unwrap `carrier` the way `startAgent` does.
+function carrierOf<C, E extends { type: string }>(agent: Agent<C, E>): AnyStateMachine {
+    return agent.carrier as AnyStateMachine;
+}
+
 function startedActor(machine: ReturnType<typeof defineAgent>) {
-    const actor = createActor(machine);
+    const actor = createActor(carrierOf(machine));
     actor.start();
     return actor;
 }
@@ -208,7 +216,7 @@ describe("compile() — END-free compound (5.12)", () => {
             modes: { group, other },
         });
 
-        const snap = createActor(machine).start().getSnapshot();
+        const snap = createActor(carrierOf(machine)).start().getSnapshot();
         expect(JSON.stringify(snap.value)).not.toContain("$end");
     });
 });
@@ -303,7 +311,7 @@ describe("compile() — RE_THROW error route", () => {
 
         // Hand-rolled subscribe — wait for the actor to surface the error.
         const errors: unknown[] = [];
-        const actor = createActor(machine);
+        const actor = createActor(carrierOf(machine));
         actor.subscribe({ error: (e) => errors.push(e) });
         actor.start();
         await settle();
@@ -396,7 +404,7 @@ describe("compile() — actor naming (DD-008 as invariant)", () => {
         // `machine.implementations.actors` is the resolved `setup({ actors })`
         // map — keyed by camelCased dotted path + `Node`.
         const actorKeys = Object.keys(
-            (machine as unknown as { implementations: { actors: Record<string, unknown> } })
+            (carrierOf(machine) as unknown as { implementations: { actors: Record<string, unknown> } })
                 .implementations.actors,
         );
         expect(actorKeys).toContain("socraticEvaluatingNode");

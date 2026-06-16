@@ -1,6 +1,6 @@
 # @eduardorenani/atlasjs
 
-Mode-based agent orchestration on top of [XState v5](https://stately.ai/docs/xstate).
+Mode-based agent orchestration for TypeScript. Build an agent as a set of **modes** — each a goal-bound unit of work — and the library owns the state-machine wiring behind a small, typed surface.
 
 > **Alpha.** The API is stable enough to build with, but minor 0.x bumps may still break shape. Pin exact versions.
 
@@ -22,10 +22,10 @@ Because a behavior can `stay: "replay"` (re-run now) or `stay: "waitOnEvent"` (r
 ## Install
 
 ```bash
-npm install @eduardorenani/atlasjs@alpha xstate
+npm install @eduardorenani/atlasjs@alpha
 ```
 
-`xstate@^5` is a peer dependency — install it explicitly. Node 20+ required, ESM only.
+Node 20+ required, ESM only.
 
 ## 30-second tour
 
@@ -74,7 +74,7 @@ const answering = defineMode<Ctx, Ev, { answer: string }>({
     },
 });
 
-const machine = defineAgent<
+const agent = defineAgent<
     Ctx,
     Ev,
     { listening: typeof listening; answering: typeof answering }
@@ -86,13 +86,13 @@ const machine = defineAgent<
     modes: { listening, answering },
 });
 
-const actor = startAgent<Ctx, Ev>(machine);
+const actor = startAgent(agent); // Ctx/Ev inferred from the agent handle
 actor.send({ type: "ASK", question: "What is a mode?" });
 ```
 
 `behavior` returns `{ outcome, payload }` (leave) or `{ stay, payload }` (re-run). The route on `achieved` is the **only** way out of a successful run — there is no untyped escape hatch.
 
-`startAgent` is the runtime boundary: hosts never import from `xstate` directly. The returned actor exposes `send`, `stop`, and `getSnapshot` — nothing else from XState's surface leaks out.
+`defineAgent` returns an opaque `Agent<Ctx, Ev>` handle and `startAgent(agent)` infers both type parameters from it — no type arguments to restate, and the engine never appears in your code. The returned actor exposes `send`, `stop`, and `getSnapshot`, and nothing else.
 
 ## Self-suspending modes (`stay`)
 
@@ -124,7 +124,7 @@ const socratic = defineMode<Ctx, Ev, Payload>({
 
 ## Multi-turn agents (snapshot rehydration)
 
-For agents that span multiple turns, `actor.getSnapshot()` returns an opaque `AgentSnapshot<Ctx>` that round-trips through `JSON.stringify` / `JSON.parse`. Feed it back as `startAgent({ snapshot })` next turn and the agent resumes mid-conversation — including `local` slots declared on `defineCompoundMode`'s `context`.
+For agents that span multiple turns, `actor.getSnapshot()` returns an opaque `AgentSnapshot<Ctx>` whose payload is an Atlas-owned, carrier-neutral shape (typed `PersistedAgentSnapshot`) that round-trips through `JSON.stringify` / `JSON.parse`. Feed it back as `startAgent({ snapshot })` next turn and the agent resumes mid-conversation — including `local` slots declared on `defineCompoundMode`'s `context`.
 
 ```ts
 async function runTurn(
@@ -132,7 +132,7 @@ async function runTurn(
     snapshot?: AgentSnapshot<Ctx>,
 ): Promise<AgentSnapshot<Ctx>> {
     let resolveReady: (() => void) | null = null;
-    const actor = startAgent<Ctx, Ev>(machine, {
+    const actor = startAgent(agent, {
         snapshot,
         inspect: (e) => {
             // Atlas-vocabulary event. `from` / `to` are dot-joined mode paths;
@@ -157,12 +157,12 @@ The canonical multi-turn host is one `runTurn` call per incoming message: load t
 
 ### Fire-and-log via `onError`
 
-When a `behavior` rejects and **no** `routes.error` entry catches it (absent route, no matched `when`, or matched `target: RE_THROW`), the rejection escapes the machine. `startAgent({ onError })` is the host-side hook — it fires precisely when XState would otherwise raise an uncaught error. Intra-machine recovery (`routes.error: { target: <sibling> }`) is unchanged and the host observes only the recovery transition through `inspect`.
+When a `behavior` rejects and **no** `routes.error` entry catches it (absent route, no matched `when`, or matched `target: RE_THROW`), the rejection escapes the agent. `startAgent({ onError })` is the host-side hook — it fires precisely when the rejection would otherwise become an uncaught error. Intra-machine recovery (`routes.error: { target: <sibling> }`) is unchanged and the host observes only the recovery transition through `inspect`.
 
 ```ts
 import { startAgent, type AgentErrorInfo } from "@eduardorenani/atlasjs";
 
-startAgent<Ctx, Ev>(machine, {
+startAgent(agent, {
     onError: (info: AgentErrorInfo<Ctx>) => {
         // info.error      — raw rejection (unknown)
         // info.modePath   — dot-joined leaf path, e.g. "socratic"
@@ -181,7 +181,7 @@ startAgent<Ctx, Ev>(machine, {
 | -------------------- | ------------------------------------------------------------------------- |
 | `defineMode`         | A leaf mode. Always `{ input, behavior, routes }` (+ optional `events` / `stay`). `start: "run" \| "event"` controls how it activates. |
 | `defineCompoundMode` | A composite of nested modes. Children route to `END` to exit; the compound's `routes` pick the destination. |
-| `defineAgent`        | The top-level entry. Compiles to an XState machine; boot it with `startAgent`. |
+| `defineAgent`        | The top-level entry. Returns an opaque `Agent<TContext, TEvents>` handle; boot it with `startAgent`. |
 
 ## Concepts in 60 seconds
 
@@ -195,7 +195,7 @@ startAgent<Ctx, Ev>(machine, {
 
 - **API reference** — the type signatures and JSDoc in [`packages/atlas/src/types.ts`](https://github.com/EduardoRenani/atlas/blob/main/packages/atlas/src/types.ts) are the source of truth.
 - **Worked example** — [`examples/zoe/`](https://github.com/EduardoRenani/atlas/tree/main/examples/zoe) is a CLI agent that classifies user intent and dispatches across greetings / improvising / socratic modes, and persists every turn via file-backed snapshots.
-- **Specs** — the contract lives in [`docs/specs/004-xstate-agent-wrapper.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/004-xstate-agent-wrapper.md), [`005-agent-deps-and-stringifiable-context.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/005-agent-deps-and-stringifiable-context.md), [`006-modes-not-states.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/006-modes-not-states.md), [`009-snapshot-aware-rehydration.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/009-snapshot-aware-rehydration.md), [`010-error-channel.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/010-error-channel.md), and [`011-self-suspending-modes.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/011-self-suspending-modes.md) (the unified mode model — `start`, `outcome` vs `stay`).
+- **Specs** — the contract lives in [`docs/specs/004-xstate-agent-wrapper.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/004-xstate-agent-wrapper.md), [`005-agent-deps-and-stringifiable-context.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/005-agent-deps-and-stringifiable-context.md), [`006-modes-not-states.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/006-modes-not-states.md), [`009-snapshot-aware-rehydration.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/009-snapshot-aware-rehydration.md), [`010-error-channel.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/010-error-channel.md), [`011-self-suspending-modes.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/011-self-suspending-modes.md) (the unified mode model — `start`, `outcome` vs `stay`), and [`012-xstate-containment.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/012-xstate-containment.md) (the engine is contained behind the `Agent` handle, an Atlas-owned snapshot, and a single backend module).
 - **Design decisions** — [`docs/design-decisions.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/design-decisions.md) records the "why" behind the result contract, goal-bound exits, and the modes-not-states vocabulary.
 
 ## License

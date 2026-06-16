@@ -2,14 +2,21 @@
 // surface mirroring `Mode.routes`. These tests exercise each item in spec
 // 008 §Verification.2 (runtime tests).
 
-import { createActor } from "xstate";
+import { createActor, type AnyStateMachine } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
 import { defineCompoundMode } from "../src/defineCompoundMode.ts";
 import { END, RE_THROW } from "../src/types.ts";
-import type { ModeResult } from "../src/types.ts";
+import type { Agent, ModeResult } from "../src/types.ts";
+
+// SPEC 012 §Seam 1: `defineAgent` now returns the opaque `Agent` handle. These
+// tests drive the compiled carrier through `createActor` directly to inspect
+// lowering internals, so they unwrap `carrier` the way `startAgent` does.
+function carrierOf<C, E extends { type: string }>(agent: Agent<C, E>): AnyStateMachine {
+    return agent.carrier as AnyStateMachine;
+}
 
 type Events = { type: "GO" };
 
@@ -92,7 +99,7 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
             modes: { winGroup, good, bad },
         });
 
-        const winActor = createActor(winMachine).start();
+        const winActor = createActor(carrierOf(winMachine)).start();
         await settle();
         const winSnap = winActor.getSnapshot();
         expect(modeOf(winSnap.value)).toBe("good");
@@ -110,7 +117,7 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
             events: {} as Events,
             modes: { loseGroup, good, bad },
         });
-        const loseActor = createActor(loseMachine).start();
+        const loseActor = createActor(carrierOf(loseMachine)).start();
         await settle();
         const loseSnap = loseActor.getSnapshot();
         expect(modeOf(loseSnap.value)).toBe("bad");
@@ -154,7 +161,7 @@ describe("compound routes — per-bucket dispatch (achieved / abandoned)", () =>
             modes: { group, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await settle();
         expect(modeOf(actor.getSnapshot().value)).toBe("done");
         expect(actor.getSnapshot().context.picked).toBe("abandoned-fired");
@@ -223,7 +230,7 @@ describe("compound routes — `output` callback wiring", () => {
             modes: { group, big, small },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await settle();
         // child assigns counter 0 → 7; compound output yields counter+1 = 8.
         // 8 < 100, so the default branch fires.
@@ -289,7 +296,7 @@ describe("compound routes — `output` callback wiring", () => {
 
         // Each replay re-invokes `behavior` — several microtask turns through
         // the XState scheduler before `done` is reached. Wait by subscription.
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise<void>((resolve) => {
             const sub = actor.subscribe((snap) => {
                 if (modeOf(snap.value) === "done") {
@@ -353,7 +360,7 @@ describe("compound routes — `output` callback wiring", () => {
             modes: { group, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await settle();
         expect(modeOf(actor.getSnapshot().value)).toBe("done");
         // Slice view: inherited `messages` + local `attempts`. No `secret`.
@@ -403,7 +410,7 @@ describe("compound routes — error bubble propagation", () => {
         });
 
         const errors: unknown[] = [];
-        const actor = createActor(machine);
+        const actor = createActor(carrierOf(machine));
         actor.subscribe({ error: (e) => errors.push(e) });
         actor.start();
         await settle();
@@ -465,7 +472,7 @@ describe("compound routes — error bubble propagation", () => {
             modes: { group, good, bad, typeLanded, otherLanded },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await settle();
         const snap = actor.getSnapshot();
         expect(modeOf(snap.value)).toBe("typeLanded");
@@ -510,7 +517,7 @@ describe("compound routes — error bubble propagation", () => {
         });
 
         const errors: unknown[] = [];
-        const actor = createActor(machine);
+        const actor = createActor(carrierOf(machine));
         actor.subscribe({ error: (e) => errors.push(e) });
         actor.start();
         await settle();
@@ -565,7 +572,7 @@ describe("compound routes — event-mode child END lands in the `achieved` bucke
             modes: { group, done, fallback },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         actor.send({ type: "GO" });
         await settle(); // event-mode behavior is async (was a sync passive transition)
         const snap = actor.getSnapshot();

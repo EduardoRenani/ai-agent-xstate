@@ -1,12 +1,19 @@
 // Spec 005 runtime tests for deps freezing, identity, and isolation.
 // Spec §Imutabilidade + §Verification (runtime tests).
 
-import { createActor } from "xstate";
+import { createActor, type AnyStateMachine } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
-import type { ModeResult } from "../src/types.ts";
+import type { Agent, ModeResult } from "../src/types.ts";
+
+// SPEC 012 §Seam 1: `defineAgent` now returns the opaque `Agent` handle. These
+// tests drive the compiled carrier through `createActor` directly to inspect
+// lowering internals, so they unwrap `carrier` the way `startAgent` does.
+function carrierOf<C, E extends { type: string }>(agent: Agent<C, E>): AnyStateMachine {
+    return agent.carrier as AnyStateMachine;
+}
 
 type Ctx = { messages: readonly string[]; lastSeenBy: string };
 type Events = { type: "MESSAGE"; text: string };
@@ -52,7 +59,7 @@ describe("deps — construction-time freeze and identity", () => {
             modes: { probe, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise((r) => setTimeout(r, 0));
         actor.stop();
 
@@ -94,7 +101,7 @@ describe("deps — construction-time freeze and identity", () => {
             modes: { probe, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise((r) => setTimeout(r, 0));
         actor.stop();
 
@@ -141,7 +148,7 @@ describe("deps — construction-time freeze and identity", () => {
             modes: { probe, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise((r) => setTimeout(r, 0));
         actor.stop();
 
@@ -190,8 +197,8 @@ describe("deps — construction-time freeze and identity", () => {
             modes: { probe: bProbe, done },
         });
 
-        const actorA = createActor(machineA).start();
-        const actorB = createActor(machineB).start();
+        const actorA = createActor(carrierOf(machineA)).start();
+        const actorB = createActor(carrierOf(machineB)).start();
         await new Promise((r) => setTimeout(r, 0));
         actorA.stop();
         actorB.stop();
@@ -226,7 +233,7 @@ describe("deps — defaulting to `{}` when omitted", () => {
             modes: { probe, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise((r) => setTimeout(r, 0));
         actor.stop();
 

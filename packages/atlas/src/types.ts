@@ -1,4 +1,4 @@
-// Atlas — type contract for the XState agent wrapper.
+// Atlas — type contract for the mode-based agent orchestration library.
 //
 // Spec: docs/specs/004-xstate-agent-wrapper.md §"Type contract"
 //        + docs/specs/005-agent-deps-and-stringifiable-context.md
@@ -688,7 +688,7 @@ export type CompoundModeConfig<
 /**
  * The config passed to `defineAgent`. The root of the entire Mode tree.
  *
- * - **`id`** — XState machine id.
+ * - **`id`** — stable identifier for this agent.
  * - **`initial`** — keyed against `TModes`; typo = compile error.
  * - **`context`** — the agent's root context literal. Constrained to
  *   `JsonCompatible<TContext>` so the snapshot round-trips through arbitrary
@@ -733,6 +733,35 @@ export type AgentConfig<
     modes: TModes;
 };
 
+declare const agentBrand: unique symbol;
+
+/**
+ * Opaque handle to a compiled agent — the value `defineAgent` returns and
+ * `startAgent` consumes (spec 012 §Seam 1, DD-030).
+ *
+ * Atlas owns this seam: the carrier machine is hidden behind an Atlas brand so
+ * no consumer-facing signature mentions the underlying engine. Feeding this to
+ * the carrier's own boot API does not typecheck — `startAgent` is the only door.
+ *
+ * `TContext`/`TEvents` are carried **invariantly** via `__phantomAgent`
+ * (function-in AND function-out), so `startAgent(agent)` infers both from the
+ * brand and the explicit `startAgent<Ctx, Ev>(agent)` form is cross-checked
+ * against it (a mismatch is a compile error, not silently-wrong types).
+ *
+ * @template TContext  The agent's root context shape.
+ * @template TEvents   The agent's full event union.
+ */
+export type Agent<TContext, TEvents extends { type: string }> = {
+    readonly [agentBrand]: true;
+    // Invariant phantom (function position in AND out), mirroring the
+    // `__phantomDeps` technique on `Mode` — not a covariant property slot.
+    readonly __phantomAgent?: (io: { context: TContext; events: TEvents })
+        => { context: TContext; events: TEvents };
+    /** The compiled carrier machine. Opaque: typed `unknown` on purpose so no
+     *  engine type crosses the seam. Unwrapped only inside `startAgent`. */
+    readonly carrier: unknown;
+};
+
 // ── Atlas actor surface (spec 009) ───────────────────────────────────
 
 /**
@@ -761,6 +790,19 @@ export type AgentInspectionEvent<TContext> = {
 };
 
 declare const agentSnapshotBrand: unique symbol;
+declare const persistedBrand: unique symbol;
+
+/**
+ * Opaque, Atlas-owned persisted payload (spec 012 §Seam 2, DD-032). The
+ * concrete v2 shape is `{ atlasVersion: "2", value, context }` — an
+ * Atlas-defined, carrier-neutral descriptor — but it is **branded opaque** so
+ * hosts can type their storage layer (`PersistedAgentSnapshot`) without
+ * depending on the inside. Persist `JSON.stringify(...)` and restore with
+ * `JSON.parse(...)` at the storage boundary; do not read its fields.
+ */
+export type PersistedAgentSnapshot = {
+    readonly [persistedBrand]: true;
+};
 
 /**
  * Opaque persisted agent state. Returned by `actor.getSnapshot()`; fed back
@@ -768,12 +810,15 @@ declare const agentSnapshotBrand: unique symbol;
  * only (phantom) — used so a snapshot from agent A cannot be passed to
  * `startAgent` for an agent whose `TContext` shape differs.
  *
- * Treat the value as opaque: persist `JSON.stringify(snapshot)` and restore
- * with `JSON.parse` at the storage boundary.
+ * - `atlasVersion` is the dispatch key (spec 012 DD-032): the current schema
+ *   is `"2"`. Payloads stamped with an older version hit the mismatch path on
+ *   restore (soft reset to `initial`).
+ * - `persisted` is the Atlas-owned opaque payload — treat it as a blob:
+ *   `JSON.stringify` it to durable storage and `JSON.parse` it back.
  */
 export type AgentSnapshot<TContext> = {
     readonly atlasVersion: string;
-    readonly persisted: unknown;
+    readonly persisted: PersistedAgentSnapshot;
     readonly [agentSnapshotBrand]?: (_: TContext) => TContext;
 };
 

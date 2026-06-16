@@ -5,13 +5,20 @@
 // a string that round-trips back to a structurally equal object — covering
 // both the user-declared TContext and any synthetic compound-local slots.
 
-import { createActor } from "xstate";
+import { createActor, type AnyStateMachine } from "xstate";
 import { describe, expect, test } from "vitest";
 
 import { defineAgent } from "../src/defineAgent.ts";
 import { defineMode } from "../src/defineMode.ts";
 import { defineCompoundMode } from "../src/defineCompoundMode.ts";
-import type { ModeResult } from "../src/types.ts";
+import type { Agent, ModeResult } from "../src/types.ts";
+
+// SPEC 012 §Seam 1: `defineAgent` now returns the opaque `Agent` handle. These
+// tests drive the compiled carrier through `createActor` directly to inspect
+// lowering internals, so they unwrap `carrier` the way `startAgent` does.
+function carrierOf<C, E extends { type: string }>(agent: Agent<C, E>): AnyStateMachine {
+    return agent.carrier as AnyStateMachine;
+}
 
 type Events = { type: "ADVANCE" } | { type: "MESSAGE"; text: string };
 
@@ -69,7 +76,7 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
             modes: { probe, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise((r) => setTimeout(r, 0));
         const snapshot = actor.getSnapshot();
         actor.stop();
@@ -104,7 +111,7 @@ describe("JSON.stringify(context) round-trip — no deps leakage", () => {
             modes: { probe, done },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise((r) => setTimeout(r, 0));
         const snapshot = actor.getSnapshot();
         actor.stop();
@@ -174,7 +181,7 @@ describe("synthetic compound-local slot persistence", () => {
             modes: { inner, idle },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
 
         await new Promise<void>((resolve) => {
             const sub = actor.subscribe((snap) => {
@@ -238,7 +245,7 @@ describe("`when` predicates still route correctly after spec 005 changes", () =>
             modes: { probe, xLanding, yLanding },
         });
 
-        const actor = createActor(machine).start();
+        const actor = createActor(carrierOf(machine)).start();
         await new Promise<void>((resolve) => {
             const sub = actor.subscribe((snap) => {
                 if (modeOf(snap.value) === "yLanding") {

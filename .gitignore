@@ -6,6 +6,10 @@ dist/
 .claude/
 .zoe-sessions/
 
+# Review-only scaffolding (C4 diagrams, interface-impact notes) per the
+# spec-first workflow — generated per spec, deleted on finalize.
+temp-diagrams/
+
 # macOS / Dropbox / iCloud sync dupes — files like "machine 2.ts"
 * 2.ts
 * 2.tsx

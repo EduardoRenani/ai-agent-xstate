@@ -16,7 +16,17 @@ import { assign, fromPromise, setup } from "xstate";
 
 import { formatModePath } from "../src/formatModePath.ts";
 import { startAgent } from "../src/startAgent.ts";
-import type { AgentErrorInfo, AgentInspectionEvent } from "../src/types.ts";
+import type { Agent, AgentErrorInfo, AgentInspectionEvent } from "../src/types.ts";
+
+// SPEC 012 §Seam 1: these tests build raw carrier machines to isolate
+// `startAgent`'s plumbing, so they wrap the machine in the `Agent` brand the
+// same way `defineAgent` does. Runtime payload is identical — only `carrier`
+// is a real field — so the wrapper's behavior is unchanged by the seam.
+function asAgent<TContext, TEvents extends { type: string }>(
+    carrier: unknown,
+): Agent<TContext, TEvents> {
+    return { carrier } as Agent<TContext, TEvents>;
+}
 
 // ── Test machines ────────────────────────────────────────────────────
 
@@ -53,6 +63,8 @@ const counterMachine = setup({
     },
 });
 
+const counterAgent = asAgent<CounterCtx, CounterEv>(counterMachine);
+
 // Nested machine: drives `formatModePath` through a compound value.
 const nestedMachine = setup({
     types: { events: {} as { type: "GO" } | { type: "DEEPER" } | { type: "DONE" } },
@@ -76,6 +88,10 @@ const nestedMachine = setup({
         },
     },
 });
+
+const nestedAgent = asAgent<unknown, { type: "GO" } | { type: "DEEPER" } | { type: "DONE" }>(
+    nestedMachine,
+);
 
 // ── formatModePath ───────────────────────────────────────────────────
 
@@ -103,7 +119,7 @@ describe("formatModePath()", () => {
 
 describe("startAgent() auto-start", () => {
     test("returned actor accepts send() without explicit start", () => {
-        const actor = startAgent<CounterCtx, CounterEv>(counterMachine);
+        const actor = startAgent(counterAgent);
         expect(() => actor.send({ type: "INC" })).not.toThrow();
         actor.stop();
     });
@@ -113,14 +129,14 @@ describe("startAgent() auto-start", () => {
 
 describe("startAgent() snapshot round-trip", () => {
     test("context written before snapshot survives rehydration", () => {
-        const first = startAgent<CounterCtx, CounterEv>(counterMachine);
+        const first = startAgent(counterAgent);
         first.send({ type: "INC" });
         first.send({ type: "INC" });
         first.send({ type: "INC" });
         const snap = first.getSnapshot();
         first.stop();
 
-        const second = startAgent<CounterCtx, CounterEv>(counterMachine, {
+        const second = startAgent(counterAgent, {
             snapshot: snap,
         });
         // The second boot's first observed context should already carry
@@ -129,7 +145,7 @@ describe("startAgent() snapshot round-trip", () => {
         second.stop();
         // Capture context via a fresh actor + inspect on a no-op send to
         // surface the post-restore snapshot.
-        const probe = startAgent<CounterCtx, CounterEv>(counterMachine, {
+        const probe = startAgent(counterAgent, {
             snapshot: snap,
             inspect: (e) => {
                 if (e.type === "transition") observedContext = e.context;
@@ -144,16 +160,16 @@ describe("startAgent() snapshot round-trip", () => {
     });
 
     test("AgentSnapshot carries the coarse version tag", () => {
-        const actor = startAgent<CounterCtx, CounterEv>(counterMachine);
+        const actor = startAgent(counterAgent);
         const snap = actor.getSnapshot();
         actor.stop();
         // Coarse tag, decoupled from package version — bumped only when
-        // the snapshot shape itself changes.
-        expect(snap.atlasVersion).toBe("1");
+        // the snapshot shape itself changes. SPEC 012 §Seam 2: now "2".
+        expect(snap.atlasVersion).toBe("2");
     });
 
     test("snapshot from a fresh actor is non-empty (persists `idle` initial)", () => {
-        const actor = startAgent<CounterCtx, CounterEv>(counterMachine);
+        const actor = startAgent(counterAgent);
         const snap = actor.getSnapshot();
         actor.stop();
         expect(snap.persisted).toBeDefined();
@@ -165,7 +181,7 @@ describe("startAgent() snapshot round-trip", () => {
 describe("startAgent() inspect adapter", () => {
     test("emits transition on path change, suppresses repeats", () => {
         const events: AgentInspectionEvent<CounterCtx>[] = [];
-        const actor = startAgent<CounterCtx, CounterEv>(counterMachine, {
+        const actor = startAgent(counterAgent, {
             inspect: (e) => events.push(e),
         });
         // Boot → `idle`. Expect one transition observation: (init) → idle.
@@ -201,8 +217,8 @@ describe("startAgent() inspect adapter", () => {
 
     test("nested mode paths are dot-joined", () => {
         const transitions: string[] = [];
-        const actor = startAgent<unknown, { type: "GO" } | { type: "DEEPER" } | { type: "DONE" }>(
-            nestedMachine,
+        const actor = startAgent(
+            nestedAgent,
             {
                 inspect: (e) => {
                     if (e.type === "transition") {
@@ -229,7 +245,7 @@ describe("startAgent() inspect adapter", () => {
     });
 
     test("inspect is optional — actor works without it", () => {
-        const actor = startAgent<CounterCtx, CounterEv>(counterMachine);
+        const actor = startAgent(counterAgent);
         expect(() => actor.send({ type: "INC" })).not.toThrow();
         actor.stop();
     });
@@ -265,6 +281,8 @@ const escapeMachine = setup({
     },
 });
 
+const escapeAgent = asAgent<{ last?: string }, ErrEv>(escapeMachine);
+
 // Variant B — `routes.error.target: sibling` recovers the rejection.
 const recoverMachine = setup({
     types: { context: {} as { last?: string }, events: {} as ErrEv },
@@ -288,6 +306,8 @@ const recoverMachine = setup({
     },
 });
 
+const recoverAgent = asAgent<{ last?: string }, ErrEv>(recoverMachine);
+
 // Variant C — context written by an earlier transition is visible to
 // `onError` when a later leaf rejects. Models spec 010 §Verification #6.
 const preFailMachine = setup({
@@ -309,6 +329,8 @@ const preFailMachine = setup({
     },
 });
 
+const preFailAgent = asAgent<{ runId?: string }, ErrEv>(preFailMachine);
+
 // `fromPromise` rejections settle on the microtask queue, so each test
 // awaits an explicit settle gate after the triggering `send`. The gate
 // resolves on either `onError` (escape) or an `inspect` transition the
@@ -323,7 +345,7 @@ describe("startAgent() onError channel", () => {
         const calls: AgentErrorInfo<{ last?: string }>[] = [];
         let resolveErr: (() => void) | null = null;
         const errored = new Promise<void>((r) => { resolveErr = r; });
-        const actor = startAgent<{ last?: string }, ErrEv>(escapeMachine, {
+        const actor = startAgent(escapeAgent, {
             onError: (info) => {
                 calls.push(info);
                 if (resolveErr) { resolveErr(); resolveErr = null; }
@@ -338,7 +360,7 @@ describe("startAgent() onError channel", () => {
         if (info === undefined) throw new Error("unreachable");
         expect(info.error).toBe(BOOM);
         expect(info.modePath).toBe("failing");
-        expect(info.snapshot.atlasVersion).toBe("1");
+        expect(info.snapshot.atlasVersion).toBe("2");
     });
 
     test("recover (intra-machine): onError does NOT fire", async () => {
@@ -346,7 +368,7 @@ describe("startAgent() onError channel", () => {
         const transitions: string[] = [];
         let resolveRecovered: (() => void) | null = null;
         const recovered = new Promise<void>((r) => { resolveRecovered = r; });
-        const actor = startAgent<{ last?: string }, ErrEv>(recoverMachine, {
+        const actor = startAgent(recoverAgent, {
             inspect: (e) => {
                 transitions.push(`${e.from} → ${e.to}`);
                 if (e.to === "recovered" && resolveRecovered) {
@@ -377,7 +399,7 @@ describe("startAgent() onError channel", () => {
         // preFailMachine auto-transitions from `stamp` (assigns runId="r1")
         // into `failing` (rejects), so we don't even need to send an event:
         // the failure path runs to completion on boot.
-        startAgent<{ runId?: string }, ErrEv>(preFailMachine, {
+        startAgent(preFailAgent, {
             onError: (info) => {
                 calls.push(info);
                 if (resolveErr) { resolveErr(); resolveErr = null; }
@@ -400,7 +422,7 @@ describe("startAgent() onError channel", () => {
         let captured: AgentErrorInfo<{ last?: string }> | undefined;
         let resolveErr: (() => void) | null = null;
         const errored = new Promise<void>((r) => { resolveErr = r; });
-        const first = startAgent<{ last?: string }, ErrEv>(escapeMachine, {
+        const first = startAgent(escapeAgent, {
             onError: (info) => {
                 captured = info;
                 if (resolveErr) { resolveErr(); resolveErr = null; }
@@ -418,7 +440,9 @@ describe("startAgent() onError channel", () => {
         // We assert on the persisted shape directly because re-booting an
         // actor in error status surfaces XState lifecycle quirks
         // orthogonal to this contract.
-        const persisted = captured.snapshot.persisted as { value: unknown };
+        // SPEC 012 §Seam 2: the persisted payload is Atlas-owned `{ value,
+        // context }`, so `value` is read directly off it.
+        const persisted = captured.snapshot.persisted as unknown as { value: unknown };
         expect(formatModePath(persisted.value)).toBe("failing");
     });
 
@@ -432,7 +456,7 @@ describe("startAgent() onError channel", () => {
         // wrapper deliberately hides). The spec's Verification #4 cites
         // the code site; we cover that the surface still works here.
         const inspects: AgentInspectionEvent<{ last?: string }>[] = [];
-        const actor = startAgent<{ last?: string }, ErrEv>(escapeMachine, {
+        const actor = startAgent(escapeAgent, {
             inspect: (e) => inspects.push(e),
         });
         // Boot path still emits the initial transition.

@@ -3,11 +3,10 @@
 // Spec: docs/specs/008-compound-mode-routes.md §"Final substate injection —
 // per outcome".
 //
-// Why a separate module: `buildActiveState` / `buildPassiveState` need the
-// sentinel *values* to replace `target: END`, and `injectEnd` consumes them
-// to drive bucket-aware rewriting. A direct value-import cycle between the
-// two would be a runtime hazard; this leaf module gives both sides one
-// shared source.
+// Why a separate module: `lowerToIr` mints these sentinel *values* for the IR's
+// `{ kind: "end", bucket }` targets, and `xstateBackend`'s translator consumes
+// them to drive bucket-aware `$end_*` final injection/rewriting. This leaf
+// module gives both sides one shared source.
 //
 // These symbols are wrapper-internal: they never surface in the user-facing
 // API, never appear in `types.ts`, and are exhaustively rewritten to state
