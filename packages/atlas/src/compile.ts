@@ -14,10 +14,10 @@
 //
 // The previous direct config construction (the `buildStatesMap` /
 // `buildCompoundOnDone` recursion + the leaf/compound route-lowering
-// duplication) is gone: both the leaf and the compound route lowering collapsed
-// onto the IR's single `OutcomeEdge` / `ErrorEdge` shape, lowered once by the
-// translator. `buildActiveState` / `injectEnd` / `contextLift` keep their
-// exports (white-box unit tests pin them) but are no longer on this path.
+// duplication, formerly in `buildActiveState.ts` / `injectEnd.ts`) is gone:
+// both the leaf and the compound route lowering collapsed onto the IR's single
+// `OutcomeEdge` / `ErrorEdge` shape, lowered once by the translator. Only the
+// engine-neutral lift primitives survive in `contextLift.ts`.
 //
 // `defineAgent` returns this value verbatim.
 

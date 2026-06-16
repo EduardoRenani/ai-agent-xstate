@@ -1,11 +1,12 @@
-// Phase 5.16 runtime tests: final emit — `compile()` composes every slice
-// (validators + walk + buildActors + buildActions + buildActiveState with
-// parent lift + per-level END injection) and hands the result to
-// `setup({...}).createMachine({...})`. `defineAgent` returns that machine.
+// Runtime tests for `compile()` — the end-to-end lowering. `compile` runs the
+// validators, produces the Atlas IR (`lowerToIr`), and hands it to the backend
+// translator (`xstateBackend.translateAgent`) which emits the carrier machine.
+// `defineAgent` wraps that machine in the opaque `Agent` handle (spec 012).
+// These tests drive the machine and assert on its observable behavior.
 //
-// Spec: docs/specs/004-tasks.md Phase 5.16 +
-// docs/specs/004-xstate-agent-wrapper.md §Mapping +
-// docs/specs/011-self-suspending-modes.md §Desugaring.
+// Spec: docs/specs/004-xstate-agent-wrapper.md §Mapping +
+// docs/specs/011-self-suspending-modes.md §Desugaring +
+// docs/specs/012-xstate-containment.md §Seam 3.
 //
 // SPEC 011 adaptations applied throughout (observable behaviour preserved):
 //   - `ModeOutput` → `ModeResult`; the `retry` route is gone.

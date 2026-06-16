@@ -12,13 +12,11 @@
 // `$`-prefixed state names. Those concepts live exclusively in `xstateBackend.ts`,
 // which translates this IR into a `setup().createMachine` config.
 //
-// Why the IR boundary sits ABOVE the per-mode lowering (and not below): the
-// existing suite (test/buildActiveState.test.ts, test/contextLift.test.ts,
-// test/injectEnd.test.ts) calls `buildActiveState(slot, lift, deps)` directly and
-// asserts on `.states.$run.invoke`, `.states.$wait`, `.onDone`, importing
-// LoweredInvokeState/LoweredWaitState/LoweredAtomicState. Those are XState-shaped.
-// The IR is therefore the NEW carrier-neutral contract that the translator
-// consumes; the legacy `Lowered*` shapes remain as thin test surfaces.
+// The IR boundary sits ABOVE the per-mode lowering: `lowerToIr` walks the
+// `AgentConfig` tree and emits this carrier-neutral IR, and `xstateBackend`'s
+// translator turns it into the `$run`/`$wait` mini-compound, `$end_*` finals,
+// and engine event reads. No XState-shaped `Lowered*` config exists outside the
+// translator anymore — the IR is the single contract between the two halves.
 
 // EndBucket already exists in endBuckets.ts — reuse it (it is Atlas vocabulary, no $).
 import type { EndBucket } from "./endBuckets.ts";

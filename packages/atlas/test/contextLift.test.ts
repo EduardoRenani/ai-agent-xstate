@@ -1,34 +1,26 @@
-// Phase 5.13 runtime tests: compound-local context lift.
+// Unit tests for the compound-local lift primitives.
 //
-// Two layers:
-//   1) Direct tests on `liftInput` / `liftExitAssign` / `liftErrorAssign` /
-//      `liftGuard` / `makeCompoundEntry` / `makeCompoundExit` /
-//      `compoundLocalKey` — bare invocation, no XState involved. These
-//      pin the read-view shape and write-split semantics.
-//   2) Integration via `buildActiveState(slot, lift)` driven through a
-//      live XState machine. This proves the wrapped callbacks behave
-//      correctly when XState calls them (input → behavior → assign), and
-//      that writes land in the right destination (agent root vs. compound
-//      slot).
+// Spec: docs/specs/004-xstate-agent-wrapper.md §"Lexical scoping of context"
+//       + docs/specs/012-xstate-containment.md §Seam 3.
 //
-// Spec: docs/specs/004-tasks.md Phase 5.13.
+// Scope (post spec 012 §Seam 3): contextLift now exposes only the engine-neutral
+// lift primitives — `compoundLocalKey`, the `buildSubContext` read-view, and the
+// `makeCompoundEntry` / `makeCompoundExit` slot actions. The write-split
+// (`splitUserUpdate`) and the per-callback patch/guard adaptation moved into
+// `xstateBackend`'s IR translator; their behavior is covered end-to-end by the
+// integration suites that drive the live `compile → lowerToIr → translateAgent`
+// path (jsonContext, snapshotV2, compoundRoutes — compound-local writes split to
+// the right slot/root and reset on re-entry).
 
 import { describe, expect, test } from "vitest";
-import { createActor, fromPromise, setup } from "xstate";
 
 import {
+    buildSubContext,
     compoundLocalKey,
-    liftErrorAssign,
-    liftExitAssign,
-    liftGuard,
-    liftInput,
     makeCompoundEntry,
     makeCompoundExit,
     type LiftContext,
 } from "../src/contextLift.ts";
-import { buildActiveState } from "../src/buildActiveState.ts";
-import type { LeafSlot } from "../src/walk.ts";
-import type { RunModeConfig, ModeResult } from "../src/types.ts";
 
 describe("compoundLocalKey()", () => {
     test("single segment → `__<name>_local`", () => {
@@ -39,171 +31,41 @@ describe("compoundLocalKey()", () => {
         expect(compoundLocalKey("socratic.evaluating")).toBe("__socratic_evaluating_local");
     });
 
-    test("deep path", () => {
+    test("deep dotted path", () => {
         expect(compoundLocalKey("a.b.c.d")).toBe("__a_b_c_d_local");
     });
 
-    test("throws on empty path", () => {
+    test("empty path throws", () => {
         expect(() => compoundLocalKey("")).toThrow(/empty path/);
     });
 });
 
-describe("liftInput()", () => {
-    test("user sees only inherit + local keys", () => {
-        const lift: LiftContext = {
-            key: "__socratic_local",
-            inherit: ["messages"],
-            initialLocal: { attempts: 0 },
-        };
-        let seen: unknown;
-        const lifted = liftInput(({ context }) => {
-            seen = context;
-            return {};
-        }, lift);
-        lifted({
-            context: {
-                messages: ["hi"],
-                hidden: "should not be visible",
-                __socratic_local: { attempts: 2 },
-            },
-        });
-        expect(seen).toEqual({ messages: ["hi"], attempts: 2 });
-    });
-
-    test("local keys read undefined when slot is not yet initialized", () => {
-        const lift: LiftContext = {
-            key: "__socratic_local",
-            inherit: ["messages"],
-            initialLocal: { attempts: 0 },
-        };
-        let seen: unknown;
-        const lifted = liftInput(({ context }) => {
-            seen = context;
-            return {};
-        }, lift);
-        lifted({ context: { messages: ["hi"] } });
-        expect(seen).toEqual({ messages: ["hi"], attempts: undefined });
-    });
-});
-
-describe("liftExitAssign()", () => {
+describe("buildSubContext() — lifted read-view", () => {
     const lift: LiftContext = {
         key: "__socratic_local",
         inherit: ["messages"],
         initialLocal: { attempts: 0 },
     };
 
-    test("inherit write goes to root, local write goes to slot", () => {
-        const action = liftExitAssign(
-            ({ context, payload }) => {
-                const c = context as { messages: string[]; attempts: number };
-                const p = payload as { msg: string };
-                return {
-                    messages: [...c.messages, p.msg],
-                    attempts: c.attempts + 1,
-                };
-            },
-            lift,
-        );
-        // XState v5 assign callback shape: ({ context, event }) => Partial<TContext>
-        const fn = (action as unknown as {
-            assignment: (args: { context: unknown; event: unknown }) => Record<string, unknown>;
-        }).assignment;
-        const patch = fn({
-            context: {
+    test("presents only inherit (live from root) + local (from slot) keys", () => {
+        const sub = buildSubContext(
+            {
                 messages: ["hi"],
+                hidden: "should not be visible",
                 __socratic_local: { attempts: 2 },
             },
-            event: { output: { outcome: "achieved", payload: { msg: "yo" } } },
-        });
-        expect(patch).toEqual({
-            messages: ["hi", "yo"],
-            __socratic_local: { attempts: 3 },
-        });
-    });
-
-    test("out-of-scope keys are silently dropped", () => {
-        const action = liftExitAssign(
-            () => ({ messages: ["x"], totallyUnknown: 999 }),
             lift,
         );
-        const fn = (action as unknown as {
-            assignment: (args: { context: unknown; event: unknown }) => Record<string, unknown>;
-        }).assignment;
-        const patch = fn({
-            context: { messages: [], __socratic_local: { attempts: 0 } },
-            event: { output: { outcome: "achieved", payload: {} } },
-        });
-        expect(patch).toEqual({ messages: ["x"] });
-        expect(patch).not.toHaveProperty("totallyUnknown");
+        expect(sub).toEqual({ messages: ["hi"], attempts: 2 });
+    });
+
+    test("local keys read undefined when the slot is not yet initialized", () => {
+        const sub = buildSubContext({ messages: ["hi"] }, lift);
+        expect(sub).toEqual({ messages: ["hi"], attempts: undefined });
     });
 });
 
-describe("liftErrorAssign()", () => {
-    test("error reaches user callback; write split applies", () => {
-        const lift: LiftContext = {
-            key: "__foo_local",
-            inherit: ["log"],
-            initialLocal: { lastError: "" },
-        };
-        const action = liftErrorAssign(
-            ({ context, error }) => {
-                const c = context as { log: string[]; lastError: string };
-                const msg = (error as Error).message;
-                return {
-                    log: [...c.log, msg],
-                    lastError: msg,
-                };
-            },
-            lift,
-        );
-        const fn = (action as unknown as {
-            assignment: (args: { context: unknown; event: unknown }) => Record<string, unknown>;
-        }).assignment;
-        const patch = fn({
-            context: { log: [], __foo_local: { lastError: "" } },
-            event: { error: new Error("boom") },
-        });
-        expect(patch).toEqual({
-            log: ["boom"],
-            __foo_local: { lastError: "boom" },
-        });
-    });
-});
-
-describe("liftGuard()", () => {
-    test("user guard sees the lifted view", () => {
-        const lift: LiftContext = {
-            key: "__foo_local",
-            inherit: ["messages"],
-            initialLocal: { attempts: 0 },
-        };
-        const guard = liftGuard(({ context }) => {
-            const c = context as { messages: string[]; attempts: number };
-            return c.attempts < 3 && c.messages.length > 0;
-        }, lift);
-        expect(
-            guard({
-                context: { messages: ["hi"], __foo_local: { attempts: 2 } },
-                event: { type: "X" },
-            }),
-        ).toBe(true);
-        expect(
-            guard({
-                context: { messages: ["hi"], __foo_local: { attempts: 3 } },
-                event: { type: "X" },
-            }),
-        ).toBe(false);
-        expect(
-            guard({
-                context: { messages: [], __foo_local: { attempts: 0 } },
-                event: { type: "X" },
-            }),
-        ).toBe(false);
-    });
-});
-
-describe("nested lift (parent chain)", () => {
+describe("buildSubContext() — nested lift (parent chain)", () => {
     // Outer A has local { outerCount } inheriting `messages` from root.
     // Inner B inherits ["messages", "outerCount"] from A, with own
     // local { innerCount }.
@@ -219,54 +81,16 @@ describe("nested lift (parent chain)", () => {
         parent: outerLift,
     };
 
-    test("inner sees messages (from root) and outerCount (from outer slot) and its own innerCount", () => {
-        let seen: unknown;
-        const lifted = liftInput(({ context }) => {
-            seen = context;
-            return {};
-        }, innerLift);
-        lifted({
-            context: {
+    test("inner sees messages (root), outerCount (outer slot), and its own innerCount", () => {
+        const sub = buildSubContext(
+            {
                 messages: ["m"],
                 __a_local: { outerCount: 7 },
                 __a_b_local: { innerCount: 3 },
             },
-        });
-        expect(seen).toEqual({ messages: ["m"], outerCount: 7, innerCount: 3 });
-    });
-
-    test("inner write to inherited outer-local routes to outer slot, NOT root", () => {
-        const action = liftExitAssign(
-            ({ context }) => {
-                const c = context as {
-                    messages: string[];
-                    outerCount: number;
-                    innerCount: number;
-                };
-                return {
-                    messages: [...c.messages, "new"],
-                    outerCount: c.outerCount + 10,
-                    innerCount: c.innerCount + 1,
-                };
-            },
             innerLift,
         );
-        const fn = (action as unknown as {
-            assignment: (args: { context: unknown; event: unknown }) => Record<string, unknown>;
-        }).assignment;
-        const patch = fn({
-            context: {
-                messages: ["hi"],
-                __a_local: { outerCount: 5 },
-                __a_b_local: { innerCount: 0 },
-            },
-            event: { output: { outcome: "achieved", payload: {} } },
-        });
-        expect(patch).toEqual({
-            messages: ["hi", "new"],
-            __a_local: { outerCount: 15 },
-            __a_b_local: { innerCount: 1 },
-        });
+        expect(sub).toEqual({ messages: ["m"], outerCount: 7, innerCount: 3 });
     });
 });
 
@@ -279,8 +103,8 @@ describe("makeCompoundEntry() / makeCompoundExit()", () => {
 
     test("entry initializes the slot from initialLocal", () => {
         const entry = makeCompoundEntry(lift);
-        // assign(...) with an object map: each key is a function called
-        // with the args; result builds the patch.
+        // assign(...) with an object map: each key is a function called with
+        // the args; the result builds the patch.
         const out = (entry as unknown as { assignment: Record<string, (args: unknown) => unknown> })
             .assignment;
         expect(out.__socratic_local({})).toEqual({ attempts: 0, lastSeen: "" });
@@ -303,259 +127,3 @@ describe("makeCompoundEntry() / makeCompoundExit()", () => {
         expect(out.__socratic_local({})).toBe(undefined);
     });
 });
-
-describe("integration with buildActiveState(slot, lift)", () => {
-    test("input wrapper presents lifted view, assign splits writes via XState", async () => {
-        const lift: LiftContext = {
-            key: "__socratic_local",
-            inherit: ["messages"],
-            initialLocal: { attempts: 0 },
-        };
-
-        type LiftedContext = { messages: string[]; attempts: number };
-        type ReceivedInput = { messages: string[]; attempts: number };
-
-        const config: RunModeConfig<LiftedContext, { type: string }, { reply: string }> = {
-            input: ({ context }) => ({
-                messages: context.messages,
-                attempts: context.attempts,
-            }),
-            behavior: async ({ input }) => {
-                const i = input as ReceivedInput;
-                return {
-                    outcome: "achieved",
-                    payload: { reply: `msgs=${i.messages.length},attempts=${i.attempts}` },
-                };
-            },
-            routes: {
-                achieved: {
-                    target: "done",
-                    assign: ({ context, payload }) => ({
-                        messages: [...context.messages, payload.reply],
-                        attempts: context.attempts + 1,
-                    }),
-                },
-                abandoned: { target: "done" },
-            },
-        };
-
-        const slot: LeafSlot = {
-            kind: "leaf",
-            path: "socratic.thinking",
-            // The slot config carries the runtime shape — typing widens here.
-            config: config as unknown as LeafSlot["config"],
-        };
-
-        const lowered = buildActiveState(slot, lift, {});
-
-        // Mount the lowered leaf as an atomic state of a machine whose root
-        // context carries both inherit (`messages`) and the compound's
-        // local slot (`__socratic_local: { attempts: 2 }`).
-        type RootCtx = { messages: string[]; __socratic_local: { attempts: number } };
-        const machine = setup({
-            types: {} as { context: RootCtx },
-            actors: {
-                [lowered.states.$run.invoke.src]: fromPromise(async ({ input }) => {
-                    // Bridge: this actor runs the user's `behavior` via the
-                    // wrapped input. SPEC 011: the invoke now lives at
-                    // `lowered.states.$run.invoke`, and its `input` builds an
-                    // envelope `{ userInput, event }` (the real actor in
-                    // buildActors unpacks it). Mirror that unpacking here so
-                    // `behavior` receives the user input it expects.
-                    const env = input as { userInput: unknown; event: unknown };
-                    return config.behavior({ input: env.userInput, event: env.event });
-                }),
-            },
-        }).createMachine({
-            id: "lift-int",
-            initial: "thinking",
-            context: { messages: ["seed"], __socratic_local: { attempts: 2 } },
-            states: {
-                // SPEC 011: `lowered` is now the mode's mini-compound
-                // (`$run`/`$wait`/`$end_*` + `onDone`), mounted as a single
-                // compound state. The exit assign runs on its `onDone` exactly
-                // as it did on the old leaf transition.
-                thinking: lowered as unknown as {
-                    initial: string;
-                    entry?: unknown;
-                    states: Record<string, unknown>;
-                    onDone: readonly { target?: string; actions?: unknown }[];
-                },
-                done: { type: "final" },
-            },
-        });
-
-        const actor = createActor(machine);
-        actor.start();
-        await new Promise<void>((resolve) => {
-            actor.subscribe((state) => {
-                if (state.value === "done") resolve();
-            });
-        });
-
-        // Root context after the leaf finished: `messages` got the new
-        // reply (inherit write to root), and `__socratic_local.attempts`
-        // bumped (local write to slot). `messages` includes the seed plus
-        // the assigned reply; reply reads attempts=2 from the slot view.
-        const snap = actor.getSnapshot();
-        expect(snap.context).toEqual({
-            messages: ["seed", "msgs=1,attempts=2"],
-            __socratic_local: { attempts: 3 },
-        });
-    });
-});
-
-// Exercise that a wrapped `behavior` rejection routes through the lifted
-// error assign and the write splits correctly. Uses the lower-level
-// `buildActiveState` integration like the test above.
-describe("integration: error route under a lift", () => {
-    test("error assign sees lifted view; split applies", async () => {
-        const lift: LiftContext = {
-            key: "__foo_local",
-            inherit: ["log"],
-            initialLocal: { lastError: "" },
-        };
-        type LiftedContext = { log: string[]; lastError: string };
-
-        const config: RunModeConfig<LiftedContext, { type: string }, { ok: boolean }> = {
-            input: ({ context }) => ({ log: context.log }),
-            behavior: async () => {
-                throw new Error("kaboom");
-            },
-            routes: {
-                achieved: { target: "done" },
-                abandoned: { target: "done" },
-                error: {
-                    target: "done",
-                    assign: ({ context, error }) => ({
-                        log: [...context.log, (error as Error).message],
-                        lastError: (error as Error).message,
-                    }),
-                },
-            },
-        };
-        const slot: LeafSlot = {
-            kind: "leaf",
-            path: "foo",
-            config: config as unknown as LeafSlot["config"],
-        };
-        const lowered = buildActiveState(slot, lift, {});
-
-        type RootCtx = { log: string[]; __foo_local: { lastError: string } };
-        const machine = setup({
-            types: {} as { context: RootCtx },
-            actors: {
-                [lowered.states.$run.invoke.src]: fromPromise(async () => {
-                    throw new Error("kaboom");
-                }) as unknown as ReturnType<typeof fromPromise>,
-            },
-        }).createMachine({
-            id: "lift-err",
-            initial: "foo",
-            context: { log: [], __foo_local: { lastError: "" } },
-            states: {
-                // SPEC 011: mode mini-compound; the error route lowers to
-                // `$run.invoke.onError → $end_error → onDone[error]`, whose
-                // lifted error assign runs the same write-split as before.
-                foo: lowered as unknown as {
-                    initial: string;
-                    entry?: unknown;
-                    states: Record<string, unknown>;
-                    onDone: readonly unknown[];
-                },
-                done: { type: "final" },
-            },
-        });
-
-        const actor = createActor(machine);
-        actor.start();
-        await new Promise<void>((resolve) => {
-            actor.subscribe((state) => {
-                if (state.value === "done") resolve();
-            });
-        });
-
-        const snap = actor.getSnapshot();
-        expect(snap.context).toEqual({
-            log: ["kaboom"],
-            __foo_local: { lastError: "kaboom" },
-        });
-    });
-});
-
-// Verifies the inverse: when `buildActiveState` is called WITHOUT a lift,
-// the wrapped callbacks pass through `context` unchanged. (Backward-compat
-// check — the existing buildActiveState suite already covers the no-lift
-// shape with `toMatchObject`, but this nails down the semantic.)
-describe("buildActiveState without lift (backward compatibility)", () => {
-    test("input and assign see the full root context verbatim", async () => {
-        type Ctx = { count: number; tag: string };
-        const config: RunModeConfig<Ctx, { type: string }, { result: string }> = {
-            input: ({ context }) => ({ count: context.count, tag: context.tag }),
-            behavior: async ({ input }) => {
-                const i = input as { count: number; tag: string };
-                return { outcome: "achieved", payload: { result: `${i.tag}=${i.count}` } };
-            },
-            routes: {
-                achieved: {
-                    target: "done",
-                    assign: ({ context, payload }) => ({
-                        count: context.count + 1,
-                        tag: `${context.tag}/${payload.result}`,
-                    }),
-                },
-                abandoned: { target: "done" },
-            },
-        };
-        const slot: LeafSlot = {
-            kind: "leaf",
-            path: "plain",
-            config: config as unknown as LeafSlot["config"],
-        };
-        const lowered = buildActiveState(slot, undefined, {}); // no lift
-
-        const machine = setup({
-            types: {} as { context: Ctx },
-            actors: {
-                [lowered.states.$run.invoke.src]: fromPromise(async ({ input }) => {
-                    // SPEC 011 envelope unpack (see the lifted integration test above).
-                    const env = input as { userInput: unknown; event: unknown };
-                    return config.behavior({ input: env.userInput, event: env.event });
-                }),
-            },
-        }).createMachine({
-            id: "no-lift",
-            initial: "plain",
-            context: { count: 4, tag: "t" },
-            states: {
-                // SPEC 011: mode mini-compound, no lift — input/assign see the
-                // full root context verbatim (the no-lift backward-compat path).
-                plain: lowered as unknown as {
-                    initial: string;
-                    entry?: unknown;
-                    states: Record<string, unknown>;
-                    onDone: readonly unknown[];
-                },
-                done: { type: "final" },
-            },
-        });
-
-        const actor = createActor(machine);
-        actor.start();
-        await new Promise<void>((resolve) => {
-            actor.subscribe((state) => {
-                if (state.value === "done") resolve();
-            });
-        });
-
-        expect(actor.getSnapshot().context).toEqual({
-            count: 5,
-            tag: "t/t=4",
-        });
-    });
-});
-
-// Ensure the `ModeResult` import in the file isn't dropped by the linter — it
-// is referenced by `RunModeConfig` generics at the call sites above.
-const _modeResultAnchor: ModeResult<unknown> = { outcome: "achieved", payload: undefined };
-void _modeResultAnchor;
