@@ -789,6 +789,83 @@ export type AgentInspectionEvent<TContext> = {
     awaiting?: readonly string[];
 };
 
+// ── Observability event stream (spec 013) ────────────────────────────
+
+/**
+ * SPEC 013 §The event envelope: fields shared by every `AgentEvent`. Lets a
+ * host build one base log record and attach per-kind fields on top.
+ */
+export type AgentEventEnvelope = {
+    /** Monotonic per-actor counter, starting at 0. Orders events absolutely. */
+    readonly seq: number;
+    /** Wall-clock ms (`Date.now()`) when Atlas emitted the event (C3). */
+    readonly at: number;
+    /** Dot-joined mode-path the event concerns; synthetic `$run`/`$wait` masked. */
+    readonly modePath: string;
+    /** Echo of `StartAgentOptions.correlationId`, when the host set one. */
+    readonly correlationId?: string;
+};
+
+/**
+ * SPEC 013 §The event union: every observable agent lifecycle event, in Atlas
+ * vocabulary. v1 ships 7 kinds (`error.recovered` deferred to v2; `run.started`
+ * carries no `input` in v1 — the derived input is not observable from the
+ * inspection stream).
+ *
+ * `payload`/`error`/`trigger`/`context` are delivered by reference and are
+ * read-only (C8); observers must clone before retaining or mutating. `context`
+ * is sanitized — `$event` and `__<path>_local` slots are stripped (P4).
+ */
+export type AgentEvent<TContext> =
+    | (AgentEventEnvelope & {
+          kind: "mode.entered";
+          /** The event that drove entry, if any (absent on the initial mode). */
+          trigger?: { type: string };
+          context: TContext;
+      })
+    | (AgentEventEnvelope & {
+          kind: "mode.run.started";
+          /** The waking event, when the run resumed a parked mode. */
+          trigger?: { type: string };
+          context: TContext;
+      })
+    | (AgentEventEnvelope & {
+          kind: "mode.run.settled";
+          /** Which bucket the behavior resolved into. */
+          outcome: "achieved" | "abandoned" | "error";
+          /** The `ModeResult.payload`. */
+          payload: unknown;
+          /** ms between this mode's `mode.run.started` and settlement (C4: one boot). */
+          durationMs: number;
+          context: TContext;
+      })
+    | (AgentEventEnvelope & {
+          kind: "mode.stayed";
+          /** A self-continuation: re-run now (`replay`) or wait (`waitOnEvent`). */
+          stay: "replay" | "waitOnEvent";
+          context: TContext;
+      })
+    | (AgentEventEnvelope & {
+          kind: "mode.parked";
+          /** Non-empty list of event types that will resume the mode. */
+          awaiting: readonly string[];
+          context: TContext;
+      })
+    | (AgentEventEnvelope & {
+          kind: "mode.exited";
+          /** Mode-path the agent moved to. */
+          to: string;
+          context: TContext;
+      })
+    | (AgentEventEnvelope & {
+          kind: "error.escaped";
+          /** Raw rejection value that escaped declarative recovery. */
+          error: unknown;
+          /** Snapshot at the moment of escape (same as `AgentErrorInfo`). */
+          snapshot: AgentSnapshot<TContext>;
+          context: TContext;
+      });
+
 declare const agentSnapshotBrand: unique symbol;
 declare const persistedBrand: unique symbol;
 
@@ -867,16 +944,22 @@ export type AgentErrorInfo<TContext> = {
  *   machine boots into its `initial` state. When present, the persisted
  *   slot for every compound `local` survives `entry`-reset (spec 009
  *   §Persistence Contract).
- * - `inspect` — construction-time callback receiving Atlas-vocabulary
- *   events. Phase 1 emits only `transition`.
- * - `onError` — construction-time callback fired when a rejection escapes
- *   the machine's declarative recovery (`routes.error`). Strictly
- *   additive: when omitted, the wrapper makes no `subscribe` call and
- *   current Node `unhandledRejection` propagation is preserved
- *   (spec 010 §Behavior Contract).
+ * - `correlationId` — SPEC 013: opaque host id stamped onto every `onEvent`
+ *   envelope, removing manual session-id threading.
+ * - `onEvent` — SPEC 013: the unified observability stream. Receives one
+ *   discriminated-union `AgentEvent` per observable agent action. Strictly
+ *   additive (no extra `subscribe` beyond what `onError` already triggers).
+ * - `inspect` — DEPRECATED (spec 013, C1): use `onEvent` and switch on the
+ *   `mode.*` kinds. Kept working until a later major.
+ * - `onError` — DEPRECATED (spec 013, C1): use `onEvent` and handle
+ *   `kind: "error.escaped"`. Originally spec 010's escape channel.
  */
 export type StartAgentOptions<TContext> = {
     snapshot?: AgentSnapshot<TContext>;
+    correlationId?: string;
+    onEvent?: (event: AgentEvent<TContext>) => void;
+    /** @deprecated SPEC 013 C1 — use `onEvent` and switch on `mode.*` kinds. */
     inspect?: (event: AgentInspectionEvent<TContext>) => void;
+    /** @deprecated SPEC 013 C1 — use `onEvent` and handle `error.escaped`. */
     onError?: (info: AgentErrorInfo<TContext>) => void;
 };

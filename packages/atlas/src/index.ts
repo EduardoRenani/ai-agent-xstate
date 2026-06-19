@@ -42,4 +42,7 @@ export type {
     AgentInspectionEvent,
     AgentErrorInfo,
     StartAgentOptions,
+    // SPEC 013: observability event stream.
+    AgentEvent,
+    AgentEventEnvelope,
 } from "./types.ts";

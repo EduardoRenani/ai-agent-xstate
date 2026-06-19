@@ -134,10 +134,9 @@ async function runTurn(
     let resolveReady: (() => void) | null = null;
     const actor = startAgent(agent, {
         snapshot,
-        inspect: (e) => {
-            // Atlas-vocabulary event. `from` / `to` are dot-joined mode paths;
-            // `e.awaiting` lists the event types a parked mode will resume on.
-            if (e.awaiting && e.awaiting.length > 0 && resolveReady) {
+        onEvent: (e) => {
+            // The agent parked waiting for the next event — it's ready for input.
+            if (e.kind === "mode.parked" && resolveReady) {
                 const r = resolveReady;
                 resolveReady = null;
                 r();
@@ -155,25 +154,46 @@ async function runTurn(
 
 The canonical multi-turn host is one `runTurn` call per incoming message: load the previous snapshot from storage, run one turn, persist the new snapshot. `examples/zoe/` ships this end-to-end with a file-backed session store. Contract details in [`docs/specs/009-snapshot-aware-rehydration.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/009-snapshot-aware-rehydration.md).
 
-### Fire-and-log via `onError`
+## Observability (`onEvent`)
 
-When a `behavior` rejects and **no** `routes.error` entry catches it (absent route, no matched `when`, or matched `target: RE_THROW`), the rejection escapes the agent. `startAgent({ onError })` is the host-side hook — it fires precisely when the rejection would otherwise become an uncaught error. Intra-machine recovery (`routes.error: { target: <sibling> }`) is unchanged and the host observes only the recovery transition through `inspect`.
+`startAgent({ onEvent })` is the unified observability stream — one callback that receives every observable agent action as a discriminated union, in Atlas vocabulary. It's the single hook you need to wire logging, metrics, or tracing.
 
 ```ts
-import { startAgent, type AgentErrorInfo } from "@eduardorenani/atlasjs";
+import { startAgent, type AgentEvent } from "@eduardorenani/atlasjs";
 
 startAgent(agent, {
-    onError: (info: AgentErrorInfo<Ctx>) => {
-        // info.error      — raw rejection (unknown)
-        // info.modePath   — dot-joined leaf path, e.g. "socratic"
-        // info.context    — root context after any routes.error.assign ran
-        // info.snapshot   — AgentSnapshot pointing at the failed leaf
-        logger.error({ err: info.error, modePath: info.modePath, traceId }, "agent escape");
+    correlationId: req.id, // stamped onto every event — no manual session threading
+    onEvent: (e: AgentEvent<Ctx>) => {
+        const base = { seq: e.seq, mode: e.modePath, trace: e.correlationId };
+        switch (e.kind) {
+            case "mode.run.settled":
+                logger.info({ ...base, outcome: e.outcome, ms: e.durationMs }, "mode settled");
+                break;
+            case "error.escaped":
+                logger.error({ ...base, err: e.error }, "agent escape");
+                break;
+            default:
+                logger.debug(base, e.kind);
+        }
     },
 });
 ```
 
-`onError` is opt-in: when omitted, the wrapper makes no `subscribe` call and Node's default unhandled-rejection propagation applies (strictly additive — no migration). Full contract in [`docs/specs/010-error-channel.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/010-error-channel.md).
+Every event shares an envelope — `seq` (monotonic per actor), `at` (`Date.now()`), `modePath`, and the echoed `correlationId`. The `context` delivered to observers is sanitized (internal slots stripped). The seven event kinds:
+
+| `kind` | Fires when | Adds |
+| --- | --- | --- |
+| `mode.entered` | the agent moves into a mode | `trigger?` |
+| `mode.run.started` | a mode's `behavior` starts running | `trigger?` |
+| `mode.run.settled` | the `behavior` resolves | `outcome`, `payload`, `durationMs` |
+| `mode.stayed` | a self-continuation (`replay`/`waitOnEvent`) | `stay` |
+| `mode.parked` | the mode parks awaiting an event | `awaiting` |
+| `mode.exited` | the agent leaves a mode | `to` |
+| `error.escaped` | a rejection escapes `routes.error` | `error`, `snapshot` |
+
+`onEvent` is opt-in and strictly additive: when omitted, the wrapper makes no extra `subscribe` call and Node's default unhandled-rejection propagation applies. Full contract in [`docs/specs/013-observability-event-stream.md`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/013-observability-event-stream.md).
+
+> **Deprecated:** the older `inspect` (transition-only stream) and `onError` (escape-only callback) options still work but are superseded by `onEvent` — `inspect` ≈ the `mode.*` kinds, `onError` ≈ `error.escaped`. See [`010`](https://github.com/EduardoRenani/atlas/blob/main/docs/specs/010-error-channel.md).
 
 ## The three constructors
 

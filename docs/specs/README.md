@@ -14,3 +14,4 @@
 | 010 | Host-Side Error Channel (`onError`) | Draft  |
 | 011 | Unified Modes (active/passive, `outcome`/`stay`)   | Done   |
 | 012 | XState Containment (owned seam, snapshot, IR) | Done   |
+| 013 | Observability Event Stream (`onEvent`) | Done   |
