@@ -28,13 +28,18 @@ export type TurnResult =
  * state.
  *
  * When a `behavior` rejects and no `routes.error` catches it (Zoe's modes
- * don't declare any), the failure surfaces through `onError`. The actor is
- * stopped and `runTurn` resolves with `{ ok: false }` so the host can branch.
+ * don't declare any), the failure surfaces as an `error.escaped` event on the
+ * `onEvent` stream. The actor is stopped and `runTurn` resolves with
+ * `{ ok: false }` so the host can branch.
+ *
+ * Observability is the unified `onEvent` stream (spec 013): one callback yields
+ * the whole lifecycle. `correlationId` carries `sessionId` onto every event, so
+ * logs trace back to the conversation without manual threading.
  *
  * @param text       The user's message.
  * @param snapshot   Snapshot captured by the previous `runTurn`, if any.
- * @param sessionId  Host-side session identifier — included in escape logs
- *                   so multi-tenant deployments can trace failures back to
+ * @param sessionId  Host-side session identifier — passed as `correlationId`
+ *                   so every emitted event (and every log line) is tagged with
  *                   the originating conversation.
  */
 export async function runTurn(
@@ -42,10 +47,17 @@ export async function runTurn(
     snapshot: AgentSnapshot<AgentContext> | undefined,
     sessionId: string,
 ): Promise<TurnResult> {
-    // Readiness gate is host-implemented from the `inspect` primitive. The
-    // host knows which leaf consumes the next user event (here, `"listening"`);
-    // Atlas does not infer it.
+    // Readiness gate is host-implemented from the `onEvent` stream. The host
+    // knows the agent consumes the next user event once it parks (here, back in
+    // `"listening"`); Atlas surfaces that as a `mode.parked` event.
     let resolveReady: (() => void) | null = null;
+    const unblock = (): void => {
+        if (resolveReady !== null) {
+            const r = resolveReady;
+            resolveReady = null;
+            r();
+        }
+    };
     // Reference cell — closure writes are invisible to TS control-flow
     // analysis, so a plain `let escape: ... | null` would narrow to `null`
     // after init and read as `never` post-await.
@@ -55,37 +67,38 @@ export async function runTurn(
 
     const actor = startAgent<AgentContext, AgentEvents>(agentMachine, {
         snapshot,
-        inspect: (e) => {
-            console.log(`[transition] ${e.from} → ${e.to}`);
-            // SPEC 011 Clarification #6: readiness is "the agent has parked
-            // waiting for input", surfaced as a non-empty `awaiting` (the event
-            // types that will resume it) — not a path match. The synthetic
-            // `$wait` substate is masked from `e.to`, so we read readiness from
-            // `awaiting` instead of checking `e.to === "listening"` / `.$wait`.
-            const parked = e.awaiting !== undefined && e.awaiting.length > 0;
-            if (parked && resolveReady !== null) {
-                const r = resolveReady;
-                resolveReady = null;
-                r();
-            }
-        },
-        // Fire-and-log: a rejection inside any active mode's `behavior`
-        // (chat() network errors, JSON parse failures, etc.) surfaces here
-        // with the failed leaf path and the live root context. We capture
-        // the frame, unblock the readiness gate, and let the host branch on
-        // the returned `TurnResult`.
-        onError: (info) => {
-            escapeRef.current = { modePath: info.modePath, error: info.error };
-            const message = info.error instanceof Error
-                ? info.error.message
-                : String(info.error);
-            console.error(
-                `[escape] session=${sessionId} mode=${info.modePath} error=${message}`,
-            );
-            if (resolveReady !== null) {
-                const r = resolveReady;
-                resolveReady = null;
-                r();
+        // SPEC 013: one stream, tagged with the session id, drives both logging
+        // and the readiness/escape control flow.
+        correlationId: sessionId,
+        onEvent: (e) => {
+            switch (e.kind) {
+                case "mode.entered":
+                    console.log(`[#${e.seq} ${e.correlationId}] → ${e.modePath}`);
+                    break;
+                case "mode.run.settled":
+                    // Outcome + latency per mode — the resilience/timing signal
+                    // the old `transition`-only stream could not express.
+                    console.log(
+                        `[#${e.seq}] ${e.modePath} ${e.outcome} (${e.durationMs}ms)`,
+                    );
+                    break;
+                case "mode.parked":
+                    // Readiness: the agent parked waiting for the next message.
+                    unblock();
+                    break;
+                case "error.escaped": {
+                    // Fire-and-log: a rejection inside an active mode's
+                    // `behavior` (chat() network errors, JSON parse failures)
+                    // that no `routes.error` caught. Capture the frame, unblock
+                    // the gate, and let the host branch on `TurnResult`.
+                    const message = e.error instanceof Error ? e.error.message : String(e.error);
+                    console.error(
+                        `[escape] session=${e.correlationId} mode=${e.modePath} error=${message}`,
+                    );
+                    escapeRef.current = { modePath: e.modePath, error: e.error };
+                    unblock();
+                    break;
+                }
             }
         },
     });

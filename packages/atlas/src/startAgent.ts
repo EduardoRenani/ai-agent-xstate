@@ -28,10 +28,15 @@ import { formatModePath } from "./formatModePath.ts";
 // through the shared constant instead of a local magic string so the channel
 // has a single source of truth. `startAgent` already imports xstate, so this
 // import crosses no boundary (boundary.test.ts stays green).
-import { ATLAS_AWAITING_META_KEY } from "./xstateBackend.ts";
+import { ATLAS_AWAITING_META_KEY, readDoneOutput } from "./xstateBackend.ts";
+// SPEC 013 §Behavior Contract (sanitized context): the synthetic slot keys the
+// observability stream must strip. `$event` is the reserved waking-event slot;
+// `__<path>_local` is the compound-local slot minted by `compoundLocalKey`.
+import { EVENT_SLOT } from "./eventSlot.ts";
 import type {
     Agent,
     AgentActor,
+    AgentEvent,
     AgentSnapshot,
     JsonValue,
     PersistedAgentSnapshot,
@@ -42,6 +47,41 @@ import type {
 // the dispatch key — bump it whenever the payload shape changes. v2 is the
 // carrier-neutral `{ value, context }` descriptor; v1 was XState's raw blob.
 const ATLAS_SNAPSHOT_VERSION = "2";
+
+// SPEC 013: a Distributive Omit keeps each union variant narrowed when removing
+// the stamped envelope fields. `emit`'s caller supplies everything BUT
+// `seq`/`at`/`correlationId` (those are stamped centrally).
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+type EmitBody<TContext> = DistributiveOmit<AgentEvent<TContext>, "seq" | "at" | "correlationId">;
+
+// SPEC 013 §Behavior Contract (sanitized context): the compound-local slot key
+// shape minted by `compoundLocalKey` (`__<path>_local`, contextLift.ts:38).
+const LOCAL_SLOT_RE = /^__.*_local$/;
+
+// SPEC 013 §Behavior Contract: strip the synthetic `$event` + `__*_local` slots
+// so observers never see Atlas/XState internals (P4). Shallow is sufficient —
+// both the event slot and every compound-local slot live at the root level.
+function sanitizeContext<TContext>(context: TContext): TContext {
+    if (typeof context !== "object" || context === null) return context;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(context as Record<string, unknown>)) {
+        if (k === EVENT_SLOT) continue;
+        if (LOCAL_SLOT_RE.test(k)) continue;
+        out[k] = v;
+    }
+    return out as TContext;
+}
+
+// SPEC 013 §Mapping: recover the RAW (unmasked) active leaf segment from the
+// engine's nested `value` — `formatModePath` masks `$run`/`$wait`, but the run
+// vs park distinction needs the synthetic leaf. Walks to the innermost entry.
+function readLeaf(value: unknown): string {
+    if (typeof value === "string") return value;
+    if (typeof value !== "object" || value === null) return String(value);
+    const entry = Object.entries(value as Record<string, unknown>)[0];
+    if (entry === undefined) return "";
+    return readLeaf(entry[1]);
+}
 
 // The concrete shape behind the opaque `PersistedAgentSnapshot` brand. Internal
 // to this file; consumers only ever see the brand.
@@ -93,6 +133,37 @@ export function startAgent<TContext, TEvents extends { type: string }>(
     let previouslyParked = false;
     const userInspect = options?.inspect;
     const userOnError = options?.onError;
+    // SPEC 013 §Public API: the unified observability stream + the host's opaque
+    // correlation id (stamped onto every envelope).
+    const userOnEvent = options?.onEvent;
+    const correlationId = options?.correlationId;
+
+    // SPEC 013 §The event envelope: a monotonic per-actor counter + a single
+    // emit helper that stamps `seq`/`at`/`correlationId` and calls `onEvent`.
+    // `body` carries `kind` + `modePath` + the kind-specific fields; the
+    // envelope stamps the rest. `EmitBody` distributes the Omit over the union
+    // so each variant stays narrowed.
+    let seq = 0;
+    function emit(body: EmitBody<TContext>): void {
+        if (userOnEvent === undefined) return;
+        const stamped = correlationId !== undefined
+            ? { seq: seq++, at: Date.now(), correlationId }
+            : { seq: seq++, at: Date.now() };
+        userOnEvent({ ...body, ...stamped } as AgentEvent<TContext>);
+    }
+
+    // SPEC 013 §The event union: per-mode run timing (C4: within one boot). The
+    // currently-running mode and when its `$run` started — used to compute
+    // `mode.run.settled.durationMs`. Only one leaf runs at a time (Atlas modes
+    // are mutually exclusive), so a scalar pair suffices.
+    let runningMode: string | undefined;
+    let runStartAt: number | undefined;
+    // Track the raw (unmasked) leaf so a replay `$run → $run` re-entry — which
+    // leaves the masked path unchanged — still yields a fresh `mode.run.started`.
+    let previousLeaf: string | undefined;
+    // The onEvent stream's own previous-path cursor, independent of the legacy
+    // `inspect` dedup state so the two paths never interfere.
+    let evPrevPath: string | undefined;
 
     // SPEC 012 §Seam 1: unwrap the opaque carrier with a single localized cast
     // — the consume-side counterpart to the wrap in `defineAgent`. This is the
@@ -104,7 +175,7 @@ export function startAgent<TContext, TEvents extends { type: string }>(
         // payload, dispatching on `atlasVersion`. Older versions → undefined →
         // fresh boot into `initial` (the mismatch path, Clarification C2).
         snapshot: resolveRestore(options?.snapshot),
-        inspect: userInspect
+        inspect: userInspect !== undefined || userOnEvent !== undefined
             ? (raw: InspectionEvent) => {
                 if (raw.type !== "@xstate.snapshot") return;
                 // Filter foreign actors. The closure captures `xstateActor`
@@ -128,27 +199,108 @@ export function startAgent<TContext, TEvents extends { type: string }>(
                 // `atlasAwaiting`; when found, the agent is parked in a `$wait`.
                 const awaiting = readAwaiting(snap.getMeta());
                 const parked = awaiting !== undefined;
-                // Emit when EITHER the masked path or the parked/running state
-                // changed — so a within-mode `$run ↔ $wait` flip is not deduped.
-                if (next === previousPath && parked === previouslyParked) return;
-                const from = previousPath ?? "(init)";
-                previousPath = next;
-                previouslyParked = parked;
-                userInspect({
-                    type: "transition",
-                    from,
-                    to: next,
-                    context: snap.context,
-                    ...(awaiting !== undefined ? { awaiting } : {}),
-                });
+
+                // ── SPEC 013: the unified observability stream ──
+                // SPEC 013 §Mapping: every kind is derived from this single
+                // `@xstate.snapshot` stream — `raw.event` carries the triggering
+                // event (the trigger / the actor-done with the behavior output),
+                // `snap.value`'s raw leaf gives run-vs-park, and the masked path
+                // gives enter/exit.
+                if (userOnEvent !== undefined) {
+                    const ctx = sanitizeContext(snap.context);
+                    const leaf = readLeaf(snap.value);
+                    // SPEC 013 §The event union: `raw.event` is the event that
+                    // produced this snapshot. Engine-internal `xstate.*` events
+                    // are not user triggers (e.g. `xstate.init`, actor-done).
+                    const rawEvent = raw.event as { type?: unknown } | undefined;
+                    const triggerType = typeof rawEvent?.type === "string" ? rawEvent.type : undefined;
+                    const trigger = triggerType !== undefined && !triggerType.startsWith("xstate.")
+                        ? { type: triggerType }
+                        : undefined;
+                    const isActorDone = triggerType !== undefined
+                        && triggerType.startsWith("xstate.done.actor.");
+
+                    // 1. Settlement: the mode's behavior invoke just resolved.
+                    //    `outcome`/`stay`/`payload` come from the done event's
+                    //    `output` (the `ModeResult`, via `readDoneOutput`).
+                    if (isActorDone) {
+                        const out = readDoneOutput(raw.event);
+                        const settledMode = runningMode ?? next;
+                        if (out.stay !== undefined) {
+                            emit({ kind: "mode.stayed", modePath: settledMode, stay: out.stay, context: ctx });
+                        } else if (
+                            out.outcome === "achieved"
+                            || out.outcome === "abandoned"
+                            || out.outcome === "error"
+                        ) {
+                            const durationMs = runStartAt !== undefined ? Date.now() - runStartAt : 0;
+                            emit({
+                                kind: "mode.run.settled",
+                                modePath: settledMode,
+                                outcome: out.outcome,
+                                payload: out.payload,
+                                durationMs,
+                                context: ctx,
+                            });
+                            runStartAt = undefined;
+                        }
+                    }
+
+                    const pathChanged = next !== evPrevPath;
+                    // 2. Exit the prior mode (the path moved away from it).
+                    if (pathChanged && evPrevPath !== undefined) {
+                        emit({ kind: "mode.exited", modePath: evPrevPath, to: next, context: ctx });
+                    }
+                    // 3. Enter the new mode.
+                    if (pathChanged) {
+                        emit({ kind: "mode.entered", modePath: next, trigger, context: ctx });
+                    }
+                    // 4. Run vs park, read from the RAW leaf. A replay re-enters
+                    //    `$run` with the masked path unchanged, so detect it from
+                    //    the done event's `stay === "replay"` too (P5: visible retries).
+                    if (leaf === "$run") {
+                        const replay = isActorDone && readDoneOutput(raw.event).stay === "replay";
+                        if (pathChanged || previousLeaf !== "$run" || replay) {
+                            runningMode = next;
+                            runStartAt = Date.now();
+                            emit({ kind: "mode.run.started", modePath: next, trigger, context: ctx });
+                        }
+                    } else if (awaiting !== undefined && (pathChanged || previousLeaf !== "$wait")) {
+                        // Emit only on the transition INTO `$wait` — a repeated
+                        // snapshot at the same parked leaf must not re-emit.
+                        emit({ kind: "mode.parked", modePath: next, awaiting, context: ctx });
+                    }
+
+                    evPrevPath = next;
+                    previousLeaf = leaf;
+                }
+
+                // ── Legacy `inspect` (deprecated, spec 013 C1) — unchanged ──
+                if (userInspect !== undefined) {
+                    // Emit when EITHER the masked path or the parked/running
+                    // state changed — so a within-mode `$run ↔ $wait` flip is
+                    // not deduped.
+                    if (next === previousPath && parked === previouslyParked) return;
+                    const from = previousPath ?? "(init)";
+                    previousPath = next;
+                    previouslyParked = parked;
+                    userInspect({
+                        type: "transition",
+                        from,
+                        to: next,
+                        context: snap.context,
+                        ...(awaiting !== undefined ? { awaiting } : {}),
+                    });
+                }
             }
             : undefined,
     });
 
-    // Spec 010 §Behavior Contract: subscribe ONLY when `onError` is provided.
-    // When omitted, no subscribe call is made — XState's default propagation
-    // is preserved (the strict additive guarantee).
-    if (userOnError !== undefined) {
+    // Spec 010 §Behavior Contract: subscribe when `onError` is provided. SPEC
+    // 013: also subscribe when `onEvent` is provided (it emits `error.escaped`).
+    // When BOTH are omitted, no subscribe call is made — XState's default
+    // propagation is preserved (the strict additive guarantee).
+    if (userOnError !== undefined || userOnEvent !== undefined) {
         xstateActor.subscribe({
             error: (rawError: unknown) => {
                 // Spec 010 §Snapshot-at-error semantics: read the actor's
@@ -159,14 +311,28 @@ export function startAgent<TContext, TEvents extends { type: string }>(
                     value: unknown;
                     context: TContext;
                 };
-                userOnError({
+                const modePath = formatModePath(live.value);
+                const snapshot = buildAgentSnapshot<TContext>(
+                    xstateActor.getPersistedSnapshot(),
+                );
+                // SPEC 013 §The event union: the escape half of the error story
+                // (the recovered half — `error.recovered` — is deferred to v2).
+                emit({
+                    kind: "error.escaped",
+                    modePath,
                     error: rawError,
-                    modePath: formatModePath(live.value),
-                    context: live.context,
-                    snapshot: buildAgentSnapshot<TContext>(
-                        xstateActor.getPersistedSnapshot(),
-                    ),
+                    snapshot,
+                    context: sanitizeContext(live.context),
                 });
+                // Legacy `onError` (deprecated, spec 013 C1) — unchanged shape.
+                if (userOnError !== undefined) {
+                    userOnError({
+                        error: rawError,
+                        modePath,
+                        context: live.context,
+                        snapshot,
+                    });
+                }
             },
         });
     }

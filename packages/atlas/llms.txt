@@ -30,7 +30,7 @@ Types are the source of truth; signatures below mirror `src/types.ts`.
 ## Exports
 
 Runtime: `defineMode`, `defineCompoundMode`, `defineAgent`, `startAgent`, `END`, `RE_THROW`.
-Types: `Mode`, `CompoundMode`, `ModeConfig`, `RunModeConfig`, `EventModeConfig`, `CompoundModeConfig`, `AgentConfig`, `Agent`, `ModesMap`, `ModeResult`, `Outcome`, `Stay`, `Routes`, `StayMap`, `RouteList`, `RouteTarget`, `ErrorRouteTarget`, `CompoundContext`, `AgentActor`, `AgentSnapshot`, `PersistedAgentSnapshot`, `AgentInspectionEvent`, `AgentErrorInfo`, `StartAgentOptions`, `JsonValue`, `JsonObject`, `JsonArray`, `JsonPrimitive`, `JsonCompatible`.
+Types: `Mode`, `CompoundMode`, `ModeConfig`, `RunModeConfig`, `EventModeConfig`, `CompoundModeConfig`, `AgentConfig`, `Agent`, `ModesMap`, `ModeResult`, `Outcome`, `Stay`, `Routes`, `StayMap`, `RouteList`, `RouteTarget`, `ErrorRouteTarget`, `CompoundContext`, `AgentActor`, `AgentSnapshot`, `PersistedAgentSnapshot`, `AgentEvent`, `AgentEventEnvelope`, `AgentInspectionEvent`, `AgentErrorInfo`, `StartAgentOptions`, `JsonValue`, `JsonObject`, `JsonArray`, `JsonPrimitive`, `JsonCompatible`.
 
 ## Core types
 
@@ -143,10 +143,31 @@ function defineAgent<TContext, TEvents, TModes, TDeps = {}>(config: {
 // against the brand (a mismatch is a compile error).
 function startAgent<TContext, TEvents>(agent: Agent<TContext, TEvents>, options?: {
   snapshot?: AgentSnapshot<TContext>;                  // resume a previous turn
-  inspect?: (e: AgentInspectionEvent<TContext>) => void;
-  onError?: (info: AgentErrorInfo<TContext>) => void;  // fires when a rejection escapes routes.error
+  correlationId?: string;                              // opaque host id stamped onto every onEvent envelope
+  onEvent?: (e: AgentEvent<TContext>) => void;         // unified observability stream (spec 013)
+  inspect?: (e: AgentInspectionEvent<TContext>) => void;  // @deprecated — use onEvent + mode.* kinds
+  onError?: (info: AgentErrorInfo<TContext>) => void;  // @deprecated — use onEvent + error.escaped
 }): AgentActor<TContext, TEvents>;                     // { send(event), stop(), getSnapshot() }
 
+// Observability stream (spec 013). Every event extends this envelope:
+type AgentEventEnvelope = {
+  seq: number;                                         // monotonic per-actor counter from 0
+  at: number;                                          // Date.now() at emit time
+  modePath: string;                                    // dot-joined mode path (synthetic substates masked)
+  correlationId?: string;                              // echo of options.correlationId
+};
+// 7 kinds; `context` is sanitized (internal $event / __*_local slots stripped); payloads by-reference (read-only).
+type AgentEvent<TContext> = AgentEventEnvelope & ({ context: TContext } & (
+  | { kind: "mode.entered";    trigger?: { type: string } }
+  | { kind: "mode.run.started"; trigger?: { type: string } }                 // no `input` in v1 (deferred)
+  | { kind: "mode.run.settled"; outcome: "achieved"|"abandoned"|"error"; payload: unknown; durationMs: number }
+  | { kind: "mode.stayed";     stay: "replay"|"waitOnEvent" }
+  | { kind: "mode.parked";     awaiting: readonly string[] }                  // host readiness signal
+  | { kind: "mode.exited";     to: string }
+  | { kind: "error.escaped";   error: unknown; snapshot: AgentSnapshot<TContext> }
+));
+
+// @deprecated (spec 013 C1) — superseded by onEvent:
 type AgentInspectionEvent<TContext> = {
   type: "transition";
   from: string; to: string;                            // dot-joined mode paths (synthetic substates masked)
@@ -238,7 +259,7 @@ async function runTurn(text: string, snapshot?: AgentSnapshot<Ctx>): Promise<Age
   let done!: () => void; const ready = new Promise<void>(r => (done = r));
   const actor = startAgent(agent, {
     snapshot,
-    inspect: (e) => { if (e.awaiting?.length) done(); }, // resumed & parked again
+    onEvent: (e) => { if (e.kind === "mode.parked") done(); }, // resumed & parked again
   });
   actor.send({ type: "ASK", question: text });
   await ready;
